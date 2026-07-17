@@ -15,8 +15,8 @@ android {
         versionName "1.0"
 
         // ← СЮДА вставишь свои значения перед сборкой
-        buildConfigField "String", "SERVER_URL", "\"https://YOUR-APP.onrender.com\""
-        buildConfigField "String", "DEVICE_SECRET", "\"your-secret-key-here\""
+        buildConfigField "String", "SERVER_URL", "\"https://phonecontrol-vcao.onrender.com\""
+        buildConfigField "String", "DEVICE_SECRET", "\"mysecret42\""
     }
 
     buildFeatures {
