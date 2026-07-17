@@ -1,0 +1,46 @@
+plugins {
+    id 'com.android.application'
+    id 'kotlin-android'
+}
+
+android {
+    compileSdk 34
+    namespace "com.phonecontrol"
+
+    defaultConfig {
+        applicationId "com.phonecontrol"
+        minSdk 26          // Android 8+ (достаточно для Tecno Pova 3)
+        targetSdk 34
+        versionCode 1
+        versionName "1.0"
+
+        // ← СЮДА вставишь свои значения перед сборкой
+        buildConfigField "String", "SERVER_URL", "\"https://YOUR-APP.onrender.com\""
+        buildConfigField "String", "DEVICE_SECRET", "\"your-secret-key-here\""
+    }
+
+    buildFeatures {
+        buildConfig true
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    kotlinOptions {
+        jvmTarget = '1.8'
+    }
+}
+
+dependencies {
+    implementation 'androidx.core:core-ktx:1.12.0'
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'
+}
