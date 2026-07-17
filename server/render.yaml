@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: phone-control-bot
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: BOT_TOKEN
+        sync: false          # вставишь вручную в Render dashboard
+      - key: ALLOWED_CHAT_ID
+        sync: false          # твой Telegram ID
+      - key: DEVICE_SECRET
+        sync: false          # любой секретный ключ для APK
