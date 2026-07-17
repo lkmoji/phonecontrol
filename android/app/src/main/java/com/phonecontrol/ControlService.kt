@@ -17,7 +17,7 @@ class ControlService : Service() {
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var pollingJob: Job? = null
-    private var isActive = false  // сервер говорит активен или нет
+    private var deviceActive = false
 
     companion object {
         const val CHANNEL_ID = "PhoneControlChannel"
@@ -35,7 +35,7 @@ class ControlService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        return START_STICKY  // автоперезапуск если система убьёт
+        return START_STICKY
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -48,18 +48,16 @@ class ControlService : Service() {
     private fun startPolling() {
         pollingJob?.cancel()
         pollingJob = scope.launch {
-            while (isActive) {
+            while (true) {
                 try {
                     val result = poll()
                     val active = result.optBoolean("active", false)
 
-                    // Обновляем интервал опроса
-                    if (active != isActive) {
-                        isActive = active
-                        updateNotification(if (active) "Режим управления активен" else "Слежу за командами...")
+                    if (active != deviceActive) {
+                        deviceActive = active
+                        updateNotification(if (deviceActive) "Режим управления активен" else "Слежу за командами...")
                     }
 
-                    // Выполняем команду если есть
                     val cmd = result.optJSONObject("command")
                     if (cmd != null) {
                         handleCommand(cmd)
@@ -69,8 +67,7 @@ class ControlService : Service() {
                     Log.e(TAG, "Poll error: ${e.message}")
                 }
 
-                // Интервал: 10 сек если активен, иначе 60 сек
-                delay(if (isActive) 10_000L else 60_000L)
+                delay(if (deviceActive) 10_000L else 60_000L)
             }
         }
     }
@@ -102,16 +99,10 @@ class ControlService : Service() {
     private fun shutdown() {
         Log.i(TAG, "Shutdown command received")
         try {
-            // На Android 11+ нужен root или DeviceOwner для полного shutdown
-            // Для не-root: отправляем на экран блокировки (Lock screen)
-            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-            // pm.shutdown() — только с root/system
-            // Fallback: выключить экран через DevicePolicyManager
             val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as android.app.admin.DevicePolicyManager
             dpm.lockNow()
         } catch (e: Exception) {
             Log.e(TAG, "Shutdown failed: ${e.message}")
-            // Fallback: блокировка экрана через broadcast
             sendBroadcast(Intent("com.phonecontrol.LOCK_SCREEN"))
         }
     }
@@ -124,7 +115,6 @@ class ControlService : Service() {
                 Log.i(TAG, "DnD disabled")
             } else {
                 Log.w(TAG, "No DnD permission")
-                // Открываем настройки для выдачи разрешения
                 val intent = Intent(android.provider.Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS)
                 intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
                 startActivity(intent)
