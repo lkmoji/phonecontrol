@@ -1,5 +1,4 @@
 from fastapi import FastAPI, Header, HTTPException
-from pydantic import BaseModel
 from typing import Optional
 import os
 import asyncio
@@ -101,6 +100,8 @@ async def process_update(update: dict):
             "/off — выключить режим управления\n"
             "/shutdown — заблокировать экран\n"
             "/dnd — отключить «Не беспокоить»\n"
+            "/ban — заблокировать интернет\n"
+            "/unban — разблокировать интернет\n"
             "/msg <текст> — показать сообщение на экране\n"
             "/status — статус подключения"
         ))
@@ -127,6 +128,18 @@ async def process_update(update: dict):
             await send_tg(chat_id, "⚠️ Сначала включи режим командой /on")
         else:
             await enqueue_command(chat_id, {"cmd": "dnd_off"}, "отключить DnD")
+
+    elif text == "/ban":
+        if not state["active"]:
+            await send_tg(chat_id, "⚠️ Сначала включи режим командой /on")
+        else:
+            await enqueue_command(chat_id, {"cmd": "ban"}, "блокировка интернета")
+
+    elif text == "/unban":
+        if not state["active"]:
+            await send_tg(chat_id, "⚠️ Сначала включи режим командой /on")
+        else:
+            await enqueue_command(chat_id, {"cmd": "unban"}, "разблокировка интернета")
 
     elif text.startswith("/msg "):
         if not state["active"]:
