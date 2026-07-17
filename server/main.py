@@ -5,6 +5,7 @@ import os
 import asyncio
 import httpx
 from datetime import datetime
+import uuid
 
 app = FastAPI()
 
@@ -13,24 +14,41 @@ state = {
     "active": False,
     "pending_commands": [],
     "last_seen": None,
-    "command_callbacks": {},  # cmd_id -> chat_id
+    "command_callbacks": {},
 }
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 ALLOWED_CHAT_ID = os.environ.get("ALLOWED_CHAT_ID", "")
 DEVICE_SECRET = os.environ.get("DEVICE_SECRET", "secret123")
+SELF_URL = os.environ.get("SELF_URL", "")
 
-import uuid
 
-# --- Telegram Bot ---
-async def send_tg(chat_id: str, text: str, parse_mode: str = "Markdown"):
+# --- Keep alive ---
+async def keep_alive():
+    await asyncio.sleep(60)
+    while True:
+        try:
+            if SELF_URL:
+                async with httpx.AsyncClient(timeout=10) as client:
+                    await client.get(f"{SELF_URL}/health")
+        except Exception as e:
+            print(f"keep_alive error: {e}")
+        await asyncio.sleep(270)
+
+
+@app.on_event("startup")
+async def startup():
+    asyncio.create_task(keep_alive())
+
+
+# --- Telegram ---
+async def send_tg(chat_id: str, text: str):
     if not BOT_TOKEN:
         return
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": parse_mode})
-            return resp.json()
+            await client.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"})
     except Exception as e:
         print(f"send_tg error: {e}")
 
@@ -38,8 +56,7 @@ async def send_tg(chat_id: str, text: str, parse_mode: str = "Markdown"):
 def phone_online() -> bool:
     if not state["last_seen"]:
         return False
-    delta = (datetime.now() - state["last_seen"]).total_seconds()
-    return delta < 120  # считаем онлайн если ping был < 2 минут назад
+    return (datetime.now() - state["last_seen"]).total_seconds() < 120
 
 
 def last_seen_str() -> str:
@@ -52,22 +69,17 @@ def last_seen_str() -> str:
 
 
 async def enqueue_command(chat_id: str, cmd: dict, description: str):
-    """Добавляет команду в очередь и сообщает о каждом этапе."""
-
-    # Этап 1: проверка что телефон онлайн
     if not phone_online():
-        last = last_seen_str()
-        await send_tg(chat_id, f"⚠️ Телефон оффлайн (последний ping: {last})\nКоманда добавлена в очередь — выполнится когда телефон появится.")
+        await send_tg(chat_id, f"⚠️ Телефон оффлайн (последний ping: {last_seen_str()})\nКоманда добавлена в очередь — выполнится когда телефон появится.")
     else:
         await send_tg(chat_id, f"📡 Телефон онлайн (ping: {last_seen_str()})\nОтправляю команду...")
 
-    # Этап 2: добавляем в очередь с уникальным ID
     cmd_id = str(uuid.uuid4())[:8]
     cmd["_id"] = cmd_id
     state["pending_commands"].append(cmd)
     state["command_callbacks"][cmd_id] = chat_id
 
-    await send_tg(chat_id, f"✅ Команда `{description}` добавлена в очередь (ID: `{cmd_id}`)\nЖду подтверждения от телефона...")
+    await send_tg(chat_id, f"✅ Команда `{description}` в очереди (ID: `{cmd_id}`)\nЖду подтверждения от телефона...")
 
 
 async def process_update(update: dict):
@@ -83,16 +95,15 @@ async def process_update(update: dict):
         return
 
     if text in ("/start", "/help"):
-        help_text = (
+        await send_tg(chat_id, (
             "📱 *Phone Control Bot*\n\n"
-            "/on — включить режим управления (частый polling)\n"
+            "/on — включить режим управления\n"
             "/off — выключить режим управления\n"
             "/shutdown — заблокировать экран\n"
-            "/dnd — отключить режим «Не беспокоить»\n"
+            "/dnd — отключить «Не беспокоить»\n"
             "/msg <текст> — показать сообщение на экране\n"
             "/status — статус подключения"
-        )
-        await send_tg(chat_id, help_text)
+        ))
 
     elif text == "/on":
         state["active"] = True
@@ -125,20 +136,17 @@ async def process_update(update: dict):
             if not message:
                 await send_tg(chat_id, "⚠️ Укажи текст: /msg Привет")
                 return
-            await enqueue_command(chat_id, {"cmd": "show_message", "text": message}, f"показать сообщение")
+            await enqueue_command(chat_id, {"cmd": "show_message", "text": message}, "показать сообщение")
 
     elif text == "/status":
-        last = last_seen_str()
         online = "🟢 Онлайн" if phone_online() else "🔴 Оффлайн"
         mode = "🟢 Активен (каждые 10 сек)" if state["active"] else "🔴 Спящий (каждую минуту)"
-        queue = len(state["pending_commands"])
-        await send_tg(
-            chat_id,
+        await send_tg(chat_id, (
             f"📊 *Статус*\n"
-            f"Телефон: {online} (последний ping: {last})\n"
+            f"Телефон: {online} (ping: {last_seen_str()})\n"
             f"Режим: {mode}\n"
-            f"Очередь команд: {queue}"
-        )
+            f"Очередь команд: {len(state['pending_commands'])}"
+        ))
 
     else:
         await send_tg(chat_id, "❓ Неизвестная команда. Напиши /help")
@@ -151,7 +159,7 @@ async def webhook(update: dict):
     return {"ok": True}
 
 
-# --- Poll endpoint ---
+# --- Poll ---
 @app.get("/poll")
 async def poll(x_device_secret: Optional[str] = Header(None)):
     if x_device_secret != DEVICE_SECRET:
@@ -163,7 +171,6 @@ async def poll(x_device_secret: Optional[str] = Header(None)):
         cmd = state["pending_commands"].pop(0)
         cmd_id = cmd.get("_id")
 
-        # Уведомляем что команда получена телефоном
         if cmd_id and cmd_id in state["command_callbacks"]:
             chat_id = state["command_callbacks"].pop(cmd_id)
             asyncio.create_task(send_tg(chat_id, f"📲 Телефон получил команду `{cmd.get('cmd')}` (ID: `{cmd_id}`) и выполняет её."))
