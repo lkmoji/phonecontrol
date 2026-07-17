@@ -14,6 +14,7 @@ import androidx.appcompat.app.AppCompatActivity
 class MainActivity : AppCompatActivity() {
 
     private val REQUEST_ADMIN = 1
+    private lateinit var statusText: TextView
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -42,7 +43,7 @@ class MainActivity : AppCompatActivity() {
             setPadding(0, 0, 0, 48)
         }
 
-        val statusText = TextView(this).apply {
+        statusText = TextView(this).apply {
             textSize = 14f
             setTextColor(Color.parseColor("#cccccc"))
             setPadding(0, 0, 0, 32)
@@ -52,23 +53,6 @@ class MainActivity : AppCompatActivity() {
         val adminBtn = makeButton("1. Права администратора (блокировка экрана)")
         val dndBtn = makeButton("2. Доступ к «Не беспокоить»")
         val startBtn = makeButton("▶ Запустить сервис", Color.parseColor("#16213e"), Color.parseColor("#0f3460"))
-
-        fun refreshStatus() {
-            val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
-            val cn = ComponentName(this, AdminReceiver::class.java)
-            val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-
-            val adminOk = dpm.isAdminActive(cn)
-            val dndOk = nm.isNotificationPolicyAccessGranted
-
-            val sb = StringBuilder()
-            sb.appendLine(if (adminOk) "✅ Права администратора" else "❌ Права администратора — нужны для блокировки экрана")
-            sb.appendLine(if (dndOk) "✅ Доступ к «Не беспокоить»" else "❌ Доступ к «Не беспокоить» — нужен для отключения DnD")
-            sb.appendLine()
-            sb.appendLine("🌐 Сервер: ${BuildConfig.SERVER_URL}")
-
-            statusText.text = sb.toString()
-        }
 
         adminBtn.setOnClickListener {
             val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
@@ -117,8 +101,24 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        // Обновляем статус при возврате из настроек
-        recreate()
+        refreshStatus()
+    }
+
+    private fun refreshStatus() {
+        val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+        val cn = ComponentName(this, AdminReceiver::class.java)
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+
+        val adminOk = dpm.isAdminActive(cn)
+        val dndOk = nm.isNotificationPolicyAccessGranted
+
+        val sb = StringBuilder()
+        sb.appendLine(if (adminOk) "✅ Права администратора" else "❌ Права администратора — нужны для блокировки экрана")
+        sb.appendLine(if (dndOk) "✅ Доступ к «Не беспокоить»" else "❌ Доступ к «Не беспокоить» — нужен для отключения DnD")
+        sb.appendLine()
+        sb.appendLine("🌐 Сервер: ${BuildConfig.SERVER_URL}")
+
+        statusText.text = sb.toString()
     }
 
     private fun makeButton(text: String, bg: Int = Color.parseColor("#16213e"), border: Int = Color.parseColor("#e94560")): Button {
@@ -138,7 +138,7 @@ class MainActivity : AppCompatActivity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == REQUEST_ADMIN) {
-            recreate()
+            refreshStatus()
         }
     }
 }
