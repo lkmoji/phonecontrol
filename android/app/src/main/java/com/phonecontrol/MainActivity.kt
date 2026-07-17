@@ -19,6 +19,13 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // Если все разрешения уже есть — запускаем сервис и закрываемся
+        if (allPermissionsGranted()) {
+            startService()
+            finish()
+            return
+        }
+
         val scroll = ScrollView(this)
         val layout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -36,7 +43,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         val subtitle = TextView(this).apply {
-            text = "Настройка разрешений"
+            text = "Выдай разрешения и больше не открывай"
             textSize = 16f
             setTextColor(Color.parseColor("#aaaaaa"))
             gravity = Gravity.CENTER
@@ -52,7 +59,7 @@ class MainActivity : AppCompatActivity() {
 
         val adminBtn = makeButton("1. Права администратора (блокировка экрана)")
         val dndBtn = makeButton("2. Доступ к «Не беспокоить»")
-        val startBtn = makeButton("▶ Запустить сервис", Color.parseColor("#16213e"), Color.parseColor("#0f3460"))
+        val startBtn = makeButton("▶ Готово — запустить и скрыть", color = Color.parseColor("#0f3460"))
 
         adminBtn.setOnClickListener {
             val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
@@ -78,10 +85,8 @@ class MainActivity : AppCompatActivity() {
         }
 
         startBtn.setOnClickListener {
-            val intent = Intent(this, ControlService::class.java)
-            startForegroundService(intent)
-            Toast.makeText(this, "✅ Сервис запущен!", Toast.LENGTH_LONG).show()
-            refreshStatus()
+            startService()
+            finish()
         }
 
         layout.addView(title)
@@ -104,6 +109,17 @@ class MainActivity : AppCompatActivity() {
         refreshStatus()
     }
 
+    private fun allPermissionsGranted(): Boolean {
+        val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+        val cn = ComponentName(this, AdminReceiver::class.java)
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        return dpm.isAdminActive(cn) && nm.isNotificationPolicyAccessGranted
+    }
+
+    private fun startService() {
+        startForegroundService(Intent(this, ControlService::class.java))
+    }
+
     private fun refreshStatus() {
         val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
         val cn = ComponentName(this, AdminReceiver::class.java)
@@ -113,20 +129,20 @@ class MainActivity : AppCompatActivity() {
         val dndOk = nm.isNotificationPolicyAccessGranted
 
         val sb = StringBuilder()
-        sb.appendLine(if (adminOk) "✅ Права администратора" else "❌ Права администратора — нужны для блокировки экрана")
-        sb.appendLine(if (dndOk) "✅ Доступ к «Не беспокоить»" else "❌ Доступ к «Не беспокоить» — нужен для отключения DnD")
+        sb.appendLine(if (adminOk) "✅ Права администратора" else "❌ Права администратора")
+        sb.appendLine(if (dndOk) "✅ Доступ к «Не беспокоить»" else "❌ Доступ к «Не беспокоить»")
         sb.appendLine()
-        sb.appendLine("🌐 Сервер: ${BuildConfig.SERVER_URL}")
+        sb.appendLine("🌐 ${BuildConfig.SERVER_URL}")
 
         statusText.text = sb.toString()
     }
 
-    private fun makeButton(text: String, bg: Int = Color.parseColor("#16213e"), border: Int = Color.parseColor("#e94560")): Button {
+    private fun makeButton(text: String, color: Int = Color.parseColor("#e94560")): Button {
         return Button(this).apply {
             this.text = text
             textSize = 15f
             setTextColor(Color.WHITE)
-            setBackgroundColor(border)
+            setBackgroundColor(color)
             setPadding(32, 24, 32, 24)
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
@@ -137,8 +153,6 @@ class MainActivity : AppCompatActivity() {
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == REQUEST_ADMIN) {
-            refreshStatus()
-        }
+        if (requestCode == REQUEST_ADMIN) refreshStatus()
     }
 }
