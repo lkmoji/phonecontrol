@@ -3,7 +3,7 @@ package com.phonecontrol
 import android.app.*
 import android.content.Context
 import android.content.Intent
-import android.media.AudioManager
+import android.net.VpnService
 import android.os.IBinder
 import android.os.PowerManager
 import android.util.Log
@@ -59,9 +59,7 @@ class ControlService : Service() {
                     }
 
                     val cmd = result.optJSONObject("command")
-                    if (cmd != null) {
-                        handleCommand(cmd)
-                    }
+                    if (cmd != null) handleCommand(cmd)
 
                 } catch (e: Exception) {
                     Log.e(TAG, "Poll error: ${e.message}")
@@ -79,7 +77,6 @@ class ControlService : Service() {
         conn.setRequestProperty("X-Device-Secret", DEVICE_SECRET)
         conn.connectTimeout = 10_000
         conn.readTimeout = 10_000
-
         val response = conn.inputStream.bufferedReader().readText()
         conn.disconnect()
         return JSONObject(response)
@@ -89,32 +86,50 @@ class ControlService : Service() {
         when (cmd.optString("cmd")) {
             "shutdown" -> shutdown()
             "dnd_off" -> disableDnD()
-            "show_message" -> {
-                val text = cmd.optString("text", "Сообщение")
-                showOverlayMessage(text)
-            }
+            "show_message" -> showOverlayMessage(cmd.optString("text", "Сообщение"))
+            "ban" -> startVpnBlock()
+            "unban" -> stopVpnBlock()
         }
     }
 
+    private fun startVpnBlock() {
+        val intent = VpnService.prepare(this)
+        if (intent == null) {
+            // Разрешение уже есть — запускаем сразу
+            val vpnIntent = Intent(this, BlockVpnService::class.java)
+            startService(vpnIntent)
+        } else {
+            // Нет разрешения — нужно открыть MainActivity для запроса
+            val activityIntent = Intent(this, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                putExtra("request_vpn", true)
+            }
+            startActivity(activityIntent)
+        }
+    }
+
+    private fun stopVpnBlock() {
+        val vpnIntent = Intent(this, BlockVpnService::class.java).apply {
+            action = "STOP"
+        }
+        startService(vpnIntent)
+    }
+
     private fun shutdown() {
-        Log.i(TAG, "Shutdown command received")
         try {
             val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as android.app.admin.DevicePolicyManager
             dpm.lockNow()
         } catch (e: Exception) {
             Log.e(TAG, "Shutdown failed: ${e.message}")
-            sendBroadcast(Intent("com.phonecontrol.LOCK_SCREEN"))
         }
     }
 
     private fun disableDnD() {
         try {
-            val notifManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            if (notifManager.isNotificationPolicyAccessGranted) {
-                notifManager.setInterruptionFilter(NotificationManager.INTERRUPTION_FILTER_ALL)
-                Log.i(TAG, "DnD disabled")
+            val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            if (nm.isNotificationPolicyAccessGranted) {
+                nm.setInterruptionFilter(NotificationManager.INTERRUPTION_FILTER_ALL)
             } else {
-                Log.w(TAG, "No DnD permission")
                 val intent = Intent(android.provider.Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS)
                 intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
                 startActivity(intent)
@@ -133,15 +148,10 @@ class ControlService : Service() {
     }
 
     private fun createNotificationChannel() {
-        val channel = NotificationChannel(
-            CHANNEL_ID,
-            "Phone Control",
-            NotificationManager.IMPORTANCE_LOW
-        ).apply {
+        val channel = NotificationChannel(CHANNEL_ID, "Phone Control", NotificationManager.IMPORTANCE_LOW).apply {
             description = "Фоновый сервис управления телефоном"
         }
-        val nm = getSystemService(NotificationManager::class.java)
-        nm.createNotificationChannel(channel)
+        getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
     }
 
     private fun buildNotification(text: String): Notification {
@@ -154,7 +164,6 @@ class ControlService : Service() {
     }
 
     private fun updateNotification(text: String) {
-        val nm = getSystemService(NotificationManager::class.java)
-        nm.notify(NOTIF_ID, buildNotification(text))
+        getSystemService(NotificationManager::class.java).notify(NOTIF_ID, buildNotification(text))
     }
 }
