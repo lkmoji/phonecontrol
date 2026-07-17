@@ -1,3 +1,4 @@
+
 package com.phonecontrol
 
 import android.app.NotificationManager
@@ -59,6 +60,7 @@ class MainActivity : AppCompatActivity() {
 
         val adminBtn = makeButton("1. Права администратора (блокировка экрана)")
         val dndBtn = makeButton("2. Доступ к «Не беспокоить»")
+        val overlayBtn = makeButton("3. Отображение поверх других окон (для сообщений)")
         val startBtn = makeButton("▶ Готово — запустить и скрыть", color = Color.parseColor("#0f3460"))
 
         adminBtn.setOnClickListener {
@@ -84,6 +86,18 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        overlayBtn.setOnClickListener {
+            if (!android.provider.Settings.canDrawOverlays(this)) {
+                val intent = Intent(
+                    android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                    android.net.Uri.parse("package:$packageName")
+                )
+                startActivity(intent)
+            } else {
+                Toast.makeText(this, "Разрешение уже есть", Toast.LENGTH_SHORT).show()
+            }
+        }
+
         startBtn.setOnClickListener {
             startService()
             finish()
@@ -95,6 +109,8 @@ class MainActivity : AppCompatActivity() {
         layout.addView(adminBtn)
         layout.addView(Space(this).apply { minimumHeight = 24 })
         layout.addView(dndBtn)
+        layout.addView(Space(this).apply { minimumHeight = 24 })
+        layout.addView(overlayBtn)
         layout.addView(Space(this).apply { minimumHeight = 40 })
         layout.addView(startBtn)
 
@@ -113,7 +129,9 @@ class MainActivity : AppCompatActivity() {
         val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
         val cn = ComponentName(this, AdminReceiver::class.java)
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        return dpm.isAdminActive(cn) && nm.isNotificationPolicyAccessGranted
+        return dpm.isAdminActive(cn) &&
+               nm.isNotificationPolicyAccessGranted &&
+               android.provider.Settings.canDrawOverlays(this)
     }
 
     private fun startService() {
@@ -127,10 +145,12 @@ class MainActivity : AppCompatActivity() {
 
         val adminOk = dpm.isAdminActive(cn)
         val dndOk = nm.isNotificationPolicyAccessGranted
+        val overlayOk = android.provider.Settings.canDrawOverlays(this)
 
         val sb = StringBuilder()
         sb.appendLine(if (adminOk) "✅ Права администратора" else "❌ Права администратора")
         sb.appendLine(if (dndOk) "✅ Доступ к «Не беспокоить»" else "❌ Доступ к «Не беспокоить»")
+        sb.appendLine(if (overlayOk) "✅ Отображение поверх окон" else "❌ Отображение поверх окон")
         sb.appendLine()
         sb.appendLine("🌐 ${BuildConfig.SERVER_URL}")
 
