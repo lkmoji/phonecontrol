@@ -5,6 +5,7 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- Фоновая работа -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <!-- Экран поверх блокировки -->
@@ -14,13 +15,10 @@
     <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
     <!-- Администратор (для lockNow) -->
     <uses-permission android:name="android.permission.BIND_DEVICE_ADMIN" />
-    
     <application
         android:label="PhoneControl"
-        android:theme="@style/Theme.AppCompat.Light.NoActionBar"
         android:usesCleartextTraffic="false"
         android:allowBackup="false">
-        
         <activity
             android:name=".MainActivity"
             android:exported="true">
@@ -29,19 +27,16 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-        
         <activity
             android:name=".OverlayActivity"
             android:exported="false"
             android:showOnLockScreen="true"
             android:turnScreenOn="true"
             android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen" />
-        
         <service
             android:name=".ControlService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
-        
         <receiver
             android:name=".BootReceiver"
             android:exported="true">
@@ -49,7 +44,6 @@
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
             </intent-filter>
         </receiver>
-        
         <receiver
             android:name=".AdminReceiver"
             android:exported="true"
