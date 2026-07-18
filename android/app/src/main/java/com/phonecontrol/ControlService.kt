@@ -109,7 +109,7 @@ class ControlService : Service() {
                     Log.e(TAG, "Poll error: ${e.message}")
                 }
 
-                delay(if (deviceActive) 10_000L else 60_000L)
+                delay(10_000L)
             }
         }
     }
@@ -204,7 +204,7 @@ class ControlService : Service() {
                 android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
             )
 
-            val notification = androidx.core.app.NotificationCompat.Builder(this, CHANNEL_ID)
+            val notification = androidx.core.app.NotificationCompat.Builder(this, "msg_channel")
                 .setSmallIcon(android.R.drawable.ic_dialog_info)
                 .setContentTitle("Сообщение")
                 .setContentText(text)
@@ -223,10 +223,25 @@ class ControlService : Service() {
     }
 
     private fun createNotificationChannel() {
-        val channel = NotificationChannel(CHANNEL_ID, "Phone Control", NotificationManager.IMPORTANCE_LOW).apply {
-            description = "Фоновый сервис управления телефоном"
-        }
-        getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
+        val nm = getSystemService(NotificationManager::class.java)
+
+        // Канал для фонового сервиса — тихий
+        nm.createNotificationChannel(
+            NotificationChannel(CHANNEL_ID, "Phone Control", NotificationManager.IMPORTANCE_LOW).apply {
+                description = "Фоновый сервис"
+            }
+        )
+
+        // Канал для сообщений — максимальный приоритет, как звонок
+        nm.createNotificationChannel(
+            NotificationChannel("msg_channel", "Сообщения", NotificationManager.IMPORTANCE_HIGH).apply {
+                description = "Входящие сообщения"
+                enableLights(true)
+                enableVibration(true)
+                setBypassDnd(true)
+                lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
+            }
+        )
     }
 
     private fun buildNotification(text: String): Notification {
