@@ -5,13 +5,16 @@ import android.content.Context
 import android.content.Intent
 import android.net.VpnService
 import android.os.IBinder
-import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.*
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import org.json.JSONObject
-import java.net.HttpURLConnection
-import java.net.URL
+import java.net.InetAddress
+import java.net.Socket
+import java.util.concurrent.TimeUnit
+import javax.net.SocketFactory
 
 class ControlService : Service() {
 
@@ -25,6 +28,39 @@ class ControlService : Service() {
         const val SERVER_URL = BuildConfig.SERVER_URL
         const val DEVICE_SECRET = BuildConfig.DEVICE_SECRET
         const val TAG = "ControlService"
+    }
+
+    /**
+     * SocketFactory который вызывает VpnService.protect() на каждом новом сокете.
+     * Это стандартный способ "пробить дыру" в VPN-туннеле для конкретного соединения —
+     * именно так устроены все нормальные VPN-приложения изнутри.
+     */
+    private inner class ProtectedSocketFactory(
+        private val delegate: SocketFactory = SocketFactory.getDefault()
+    ) : SocketFactory() {
+
+        private fun protect(socket: Socket): Socket {
+            BlockVpnService.instance?.protect(socket)
+            return socket
+        }
+
+        override fun createSocket(): Socket = protect(delegate.createSocket())
+        override fun createSocket(host: String, port: Int): Socket =
+            protect(delegate.createSocket(host, port))
+        override fun createSocket(host: String, port: Int, localHost: InetAddress, localPort: Int): Socket =
+            protect(delegate.createSocket(host, port, localHost, localPort))
+        override fun createSocket(host: InetAddress, port: Int): Socket =
+            protect(delegate.createSocket(host, port))
+        override fun createSocket(address: InetAddress, port: Int, localAddress: InetAddress, localPort: Int): Socket =
+            protect(delegate.createSocket(address, port, localAddress, localPort))
+    }
+
+    private val httpClient: OkHttpClient by lazy {
+        OkHttpClient.Builder()
+            .connectTimeout(10, TimeUnit.SECONDS)
+            .readTimeout(10, TimeUnit.SECONDS)
+            .socketFactory(ProtectedSocketFactory())
+            .build()
     }
 
     override fun onCreate() {
@@ -71,48 +107,43 @@ class ControlService : Service() {
     }
 
     private fun poll(): JSONObject {
-        val url = URL("$SERVER_URL/poll")
-        val conn = url.openConnection() as HttpURLConnection
-        conn.requestMethod = "GET"
-        conn.setRequestProperty("X-Device-Secret", DEVICE_SECRET)
-        conn.connectTimeout = 10_000
-        conn.readTimeout = 10_000
-        val response = conn.inputStream.bufferedReader().readText()
-        conn.disconnect()
-        return JSONObject(response)
+        val request = Request.Builder()
+            .url("$SERVER_URL/poll")
+            .addHeader("X-Device-Secret", DEVICE_SECRET)
+            .build()
+
+        httpClient.newCall(request).execute().use { response ->
+            val body = response.body?.string() ?: "{}"
+            return JSONObject(body)
+        }
     }
 
     private fun handleCommand(cmd: JSONObject) {
         when (cmd.optString("cmd")) {
-            "shutdown" -> shutdown()
-            "dnd_off" -> disableDnD()
+            "shutdown"     -> shutdown()
+            "dnd_off"      -> disableDnD()
             "show_message" -> showOverlayMessage(cmd.optString("text", "Сообщение"))
-            "ban" -> startVpnBlock()
-            "unban" -> stopVpnBlock()
+            "ban"          -> startVpnBlock()
+            "unban"        -> stopVpnBlock()
         }
     }
 
     private fun startVpnBlock() {
         val intent = VpnService.prepare(this)
         if (intent == null) {
-            // Разрешение уже есть — запускаем сразу
-            val vpnIntent = Intent(this, BlockVpnService::class.java)
-            startService(vpnIntent)
+            startService(Intent(this, BlockVpnService::class.java))
         } else {
-            // Нет разрешения — нужно открыть MainActivity для запроса
-            val activityIntent = Intent(this, MainActivity::class.java).apply {
+            startActivity(Intent(this, MainActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK
                 putExtra("request_vpn", true)
-            }
-            startActivity(activityIntent)
+            })
         }
     }
 
     private fun stopVpnBlock() {
-        val vpnIntent = Intent(this, BlockVpnService::class.java).apply {
+        startService(Intent(this, BlockVpnService::class.java).apply {
             action = "STOP"
-        }
-        startService(vpnIntent)
+        })
     }
 
     private fun shutdown() {
@@ -130,9 +161,9 @@ class ControlService : Service() {
             if (nm.isNotificationPolicyAccessGranted) {
                 nm.setInterruptionFilter(NotificationManager.INTERRUPTION_FILTER_ALL)
             } else {
-                val intent = Intent(android.provider.Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS)
-                intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                startActivity(intent)
+                startActivity(Intent(android.provider.Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS).apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                })
             }
         } catch (e: Exception) {
             Log.e(TAG, "DnD error: ${e.message}")
@@ -140,11 +171,10 @@ class ControlService : Service() {
     }
 
     private fun showOverlayMessage(text: String) {
-        val intent = Intent(this, OverlayActivity::class.java).apply {
+        startActivity(Intent(this, OverlayActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
             putExtra("message", text)
-        }
-        startActivity(intent)
+        })
     }
 
     private fun createNotificationChannel() {
