@@ -17,6 +17,7 @@ class ControlService : Service() {
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var pollingJob: Job? = null
     private var deviceActive = false
+    private var wakeLock: android.os.PowerManager.WakeLock? = null
 
     companion object {
         const val CHANNEL_ID = "PhoneControlChannel"
@@ -37,7 +38,16 @@ class ControlService : Service() {
         super.onCreate()
         createNotificationChannel()
         startForeground(NOTIF_ID, buildNotification("Слежу за командами..."))
+
+        // WakeLock не даёт системе убить сервис после блокировки экрана
+        val pm = getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+        wakeLock = pm.newWakeLock(
+            android.os.PowerManager.PARTIAL_WAKE_LOCK,
+            "PhoneControl::PollingWakeLock"
+        ).apply { acquire() }
+
         startPolling()
+        BootReceiver.scheduleWatchdog(this)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
@@ -45,6 +55,7 @@ class ControlService : Service() {
 
     override fun onDestroy() {
         scope.cancel()
+        try { wakeLock?.release() } catch (e: Exception) { }
         super.onDestroy()
     }
 
@@ -97,9 +108,11 @@ class ControlService : Service() {
 
     private fun startVpnBlock() {
         startService(Intent(this, BlockVpnService::class.java))
+        VpnMonitor.start(this)
     }
 
     private fun stopVpnBlock() {
+        VpnMonitor.stop(this)
         startService(Intent(this, BlockVpnService::class.java).apply { action = "STOP" })
     }
 
