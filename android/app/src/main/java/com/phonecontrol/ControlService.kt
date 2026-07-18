@@ -19,18 +19,26 @@ class ControlService : Service() {
     private var deviceActive = false
     private var wakeLock: android.os.PowerManager.WakeLock? = null
 
+    // Счётчик подряд идущих ошибок — если много, самоперезапускаемся
+    private var consecutiveErrors = 0
+
     companion object {
         const val CHANNEL_ID = "PhoneControlChannel"
         const val NOTIF_ID = 1
         const val SERVER_URL = BuildConfig.SERVER_URL
         const val DEVICE_SECRET = BuildConfig.DEVICE_SECRET
         const val TAG = "ControlService"
+
+        // Порог ошибок подряд — после этого делаем рестарт поллера
+        private const val MAX_CONSECUTIVE_ERRORS = 10
     }
 
     private val httpClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
-            .connectTimeout(10, TimeUnit.SECONDS)
-            .readTimeout(10, TimeUnit.SECONDS)
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(15, TimeUnit.SECONDS)
+            // Переиспользуем соединения — снижает нагрузку и ускоряет reconnect
+            .retryOnConnectionFailure(true)
             .build()
     }
 
@@ -39,43 +47,86 @@ class ControlService : Service() {
         createNotificationChannel()
         startForeground(NOTIF_ID, buildNotification("Слежу за командами..."))
 
-        // WakeLock не даёт системе убить сервис после блокировки экрана
+        // PARTIAL_WAKE_LOCK держит CPU активным даже когда экран выключен
         val pm = getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
         wakeLock = pm.newWakeLock(
             android.os.PowerManager.PARTIAL_WAKE_LOCK,
             "PhoneControl::PollingWakeLock"
-        ).apply { acquire() }
+        ).also {
+            // Берём без таймаута — мы сами управляем жизненным циклом
+            it.acquire()
+        }
 
         startPolling()
+
+        // Watchdog через AlarmManager (срабатывает каждую минуту)
         BootReceiver.scheduleWatchdog(this)
+
+        // WorkManager — дополнительный страховочный слой (каждые 15 мин)
+        KeepAliveWorker.schedule(this)
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // START_STICKY: система перезапустит сервис с null intent если убьёт его
+        return START_STICKY
+    }
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        Log.w(TAG, "Service destroyed — will be restarted by watchdog")
         scope.cancel()
         try { wakeLock?.release() } catch (e: Exception) { }
         super.onDestroy()
+
+        // Самовосстановление: просим систему перезапустить нас через 3 сек
+        val restartIntent = Intent(applicationContext, ControlService::class.java)
+        val pendingIntent = android.app.PendingIntent.getService(
+            applicationContext, 1, restartIntent,
+            android.app.PendingIntent.FLAG_ONE_SHOT or android.app.PendingIntent.FLAG_IMMUTABLE
+        )
+        val am = getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        am.setExactAndAllowWhileIdle(
+            AlarmManager.ELAPSED_REALTIME_WAKEUP,
+            android.os.SystemClock.elapsedRealtime() + 3_000L,
+            pendingIntent
+        )
     }
 
     private fun startPolling() {
         pollingJob?.cancel()
         pollingJob = scope.launch {
-            while (true) {
+            while (isActive) {
                 try {
                     val result = poll()
+                    consecutiveErrors = 0  // сбрасываем счётчик при успехе
+
                     val active = result.optBoolean("active", false)
                     if (active != deviceActive) {
                         deviceActive = active
                         updateNotification(if (deviceActive) "Режим управления активен" else "Слежу за командами...")
                     }
+
                     val cmd = result.optJSONObject("command")
                     if (cmd != null) handleCommand(cmd)
+
                 } catch (e: Exception) {
-                    Log.e(TAG, "Poll error: ${e.message}")
+                    consecutiveErrors++
+                    Log.e(TAG, "Poll error #$consecutiveErrors: ${e.message}")
+
+                    if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+                        // Слишком много ошибок подряд — пересоздаём HTTP клиент и ждём дольше
+                        Log.w(TAG, "Too many errors, backing off...")
+                        consecutiveErrors = 0
+                        delay(60_000L)  // 1 минута паузы
+                        continue
+                    }
                 }
-                delay(10_000L)
+
+                // Интервал зависит от режима:
+                // active=true → 10 сек (быстро реагируем на команды)
+                // active=false → 30 сек (экономим батарею, но всё равно живём)
+                delay(if (deviceActive) 10_000L else 30_000L)
             }
         }
     }
@@ -86,7 +137,11 @@ class ControlService : Service() {
             .addHeader("X-Device-Secret", DEVICE_SECRET)
             .build()
         httpClient.newCall(request).execute().use { response ->
-            return JSONObject(response.body?.string() ?: "{}")
+            val body = response.body?.string() ?: "{}"
+            if (!response.isSuccessful) {
+                throw Exception("HTTP ${response.code}: $body")
+            }
+            return JSONObject(body)
         }
     }
 
@@ -117,25 +172,15 @@ class ControlService : Service() {
     }
 
     private fun shutdown() {
-        scope.launch(SupervisorJob()) {
-            try {
-                val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as android.app.admin.DevicePolicyManager
-                val cn = android.content.ComponentName(this@ControlService, AdminReceiver::class.java)
-                if (dpm.isAdminActive(cn)) dpm.lockNow()
-            } catch (e: Exception) {
-                Log.e(TAG, "Shutdown failed: ${e.message}")
-            }
-        }
+        val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as android.app.admin.DevicePolicyManager
+        val cn = android.content.ComponentName(this, AdminReceiver::class.java)
+        if (dpm.isAdminActive(cn)) dpm.lockNow()
     }
 
     private fun disableDnD() {
-        try {
-            val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            if (nm.isNotificationPolicyAccessGranted)
-                nm.setInterruptionFilter(NotificationManager.INTERRUPTION_FILTER_ALL)
-        } catch (e: Exception) {
-            Log.e(TAG, "DnD error: ${e.message}")
-        }
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        if (nm.isNotificationPolicyAccessGranted)
+            nm.setInterruptionFilter(NotificationManager.INTERRUPTION_FILTER_ALL)
     }
 
     private fun showOverlayMessage(text: String) {
