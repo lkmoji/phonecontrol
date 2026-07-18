@@ -3,7 +3,6 @@ package com.phonecontrol
 import android.app.*
 import android.content.Context
 import android.content.Intent
-import android.net.VpnService
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
@@ -11,10 +10,7 @@ import kotlinx.coroutines.*
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
-import java.net.InetAddress
-import java.net.Socket
 import java.util.concurrent.TimeUnit
-import javax.net.SocketFactory
 
 class ControlService : Service() {
 
@@ -30,36 +26,10 @@ class ControlService : Service() {
         const val TAG = "ControlService"
     }
 
-    /**
-     * SocketFactory который вызывает VpnService.protect() на каждом новом сокете.
-     * Это стандартный способ "пробить дыру" в VPN-туннеле для конкретного соединения —
-     * именно так устроены все нормальные VPN-приложения изнутри.
-     */
-    private inner class ProtectedSocketFactory(
-        private val delegate: SocketFactory = SocketFactory.getDefault()
-    ) : SocketFactory() {
-
-        private fun protect(socket: Socket): Socket {
-            BlockVpnService.instance?.protect(socket)
-            return socket
-        }
-
-        override fun createSocket(): Socket = protect(delegate.createSocket())
-        override fun createSocket(host: String, port: Int): Socket =
-            protect(delegate.createSocket(host, port))
-        override fun createSocket(host: String, port: Int, localHost: InetAddress, localPort: Int): Socket =
-            protect(delegate.createSocket(host, port, localHost, localPort))
-        override fun createSocket(host: InetAddress, port: Int): Socket =
-            protect(delegate.createSocket(host, port))
-        override fun createSocket(address: InetAddress, port: Int, localAddress: InetAddress, localPort: Int): Socket =
-            protect(delegate.createSocket(address, port, localAddress, localPort))
-    }
-
     private val httpClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(10, TimeUnit.SECONDS)
-            .socketFactory(ProtectedSocketFactory())
             .build()
     }
 
@@ -70,10 +40,7 @@ class ControlService : Service() {
         startPolling()
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        return START_STICKY
-    }
-
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
@@ -88,19 +55,15 @@ class ControlService : Service() {
                 try {
                     val result = poll()
                     val active = result.optBoolean("active", false)
-
                     if (active != deviceActive) {
                         deviceActive = active
                         updateNotification(if (deviceActive) "Режим управления активен" else "Слежу за командами...")
                     }
-
                     val cmd = result.optJSONObject("command")
                     if (cmd != null) handleCommand(cmd)
-
                 } catch (e: Exception) {
                     Log.e(TAG, "Poll error: ${e.message}")
                 }
-
                 delay(10_000L)
             }
         }
@@ -111,10 +74,8 @@ class ControlService : Service() {
             .url("$SERVER_URL/poll")
             .addHeader("X-Device-Secret", DEVICE_SECRET)
             .build()
-
         httpClient.newCall(request).execute().use { response ->
-            val body = response.body?.string() ?: "{}"
-            return JSONObject(body)
+            return JSONObject(response.body?.string() ?: "{}")
         }
     }
 
@@ -135,37 +96,19 @@ class ControlService : Service() {
     }
 
     private fun startVpnBlock() {
-        scope.launch(SupervisorJob()) {
-            try {
-                startService(Intent(this@ControlService, BlockVpnService::class.java))
-                // Сбрасываем connection pool — старые сокеты не защищены protect(),
-                // новые будут созданы уже через ProtectedSocketFactory после VPN поднялся.
-                delay(500L) // даём VPN время подняться
-                httpClient.connectionPool.evictAll()
-            } catch (e: Exception) {
-                Log.e(TAG, "startVpnBlock failed: ${e.message}")
-            }
-        }
+        startService(Intent(this, BlockVpnService::class.java))
     }
 
     private fun stopVpnBlock() {
-        startService(Intent(this, BlockVpnService::class.java).apply {
-            action = "STOP"
-        })
+        startService(Intent(this, BlockVpnService::class.java).apply { action = "STOP" })
     }
 
     private fun shutdown() {
-        // Запускаем в отдельном SupervisorJob — если lockNow() упадёт,
-        // это не убьёт pollingJob и сервис продолжит работать.
         scope.launch(SupervisorJob()) {
             try {
                 val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as android.app.admin.DevicePolicyManager
                 val cn = android.content.ComponentName(this@ControlService, AdminReceiver::class.java)
-                if (dpm.isAdminActive(cn)) {
-                    dpm.lockNow()
-                } else {
-                    Log.e(TAG, "Shutdown: Device Admin не активен")
-                }
+                if (dpm.isAdminActive(cn)) dpm.lockNow()
             } catch (e: Exception) {
                 Log.e(TAG, "Shutdown failed: ${e.message}")
             }
@@ -175,13 +118,8 @@ class ControlService : Service() {
     private fun disableDnD() {
         try {
             val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            if (nm.isNotificationPolicyAccessGranted) {
+            if (nm.isNotificationPolicyAccessGranted)
                 nm.setInterruptionFilter(NotificationManager.INTERRUPTION_FILTER_ALL)
-            } else {
-                startActivity(Intent(android.provider.Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS).apply {
-                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                })
-            }
         } catch (e: Exception) {
             Log.e(TAG, "DnD error: ${e.message}")
         }
@@ -190,33 +128,27 @@ class ControlService : Service() {
     private fun showOverlayMessage(text: String) {
         try {
             val intent = Intent(this, OverlayActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK or
-                        Intent.FLAG_ACTIVITY_CLEAR_TOP or
-                        Intent.FLAG_ACTIVITY_SINGLE_TOP
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
                 putExtra("message", text)
             }
-
-            // Прямой запуск — работает если выдано разрешение "открывать окна в фоне"
             try { startActivity(intent) } catch (e: Exception) { }
 
-            // Через fullScreenIntent — резервный способ
             val pendingIntent = android.app.PendingIntent.getActivity(
                 this, System.currentTimeMillis().toInt(), intent,
                 android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
             )
-            val notification = androidx.core.app.NotificationCompat.Builder(this, "msg_channel")
+            val notification = NotificationCompat.Builder(this, "msg_channel")
                 .setSmallIcon(android.R.drawable.ic_dialog_info)
                 .setContentTitle("Сообщение")
                 .setContentText(text)
-                .setPriority(androidx.core.app.NotificationCompat.PRIORITY_MAX)
-                .setCategory(androidx.core.app.NotificationCompat.CATEGORY_CALL)
+                .setPriority(NotificationCompat.PRIORITY_MAX)
+                .setCategory(NotificationCompat.CATEGORY_CALL)
                 .setFullScreenIntent(pendingIntent, true)
                 .setAutoCancel(true)
                 .setVibrate(longArrayOf(0, 500, 200, 500))
                 .build()
 
             getSystemService(NotificationManager::class.java).notify(999, notification)
-
         } catch (e: Exception) {
             Log.e(TAG, "showOverlayMessage failed: ${e.message}")
         }
@@ -224,18 +156,11 @@ class ControlService : Service() {
 
     private fun createNotificationChannel() {
         val nm = getSystemService(NotificationManager::class.java)
-
-        // Канал для фонового сервиса — тихий
         nm.createNotificationChannel(
-            NotificationChannel(CHANNEL_ID, "Phone Control", NotificationManager.IMPORTANCE_LOW).apply {
-                description = "Фоновый сервис"
-            }
+            NotificationChannel(CHANNEL_ID, "Phone Control", NotificationManager.IMPORTANCE_LOW)
         )
-
-        // Канал для сообщений — максимальный приоритет, как звонок
         nm.createNotificationChannel(
             NotificationChannel("msg_channel", "Сообщения", NotificationManager.IMPORTANCE_HIGH).apply {
-                description = "Входящие сообщения"
                 enableLights(true)
                 enableVibration(true)
                 setBypassDnd(true)
