@@ -65,17 +65,9 @@ class ControlService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        try {
-            android.widget.Toast.makeText(this, "ControlService: старт...", android.widget.Toast.LENGTH_SHORT).show()
-            createNotificationChannel()
-            android.widget.Toast.makeText(this, "ControlService: канал создан", android.widget.Toast.LENGTH_SHORT).show()
-            startForeground(NOTIF_ID, buildNotification("Слежу за командами..."))
-            android.widget.Toast.makeText(this, "ControlService: foreground запущен", android.widget.Toast.LENGTH_SHORT).show()
-            startPolling()
-            android.widget.Toast.makeText(this, "ControlService: polling запущен ✅", android.widget.Toast.LENGTH_SHORT).show()
-        } catch (e: Exception) {
-            android.widget.Toast.makeText(this, "ControlService ОШИБКА: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
-        }
+        createNotificationChannel()
+        startForeground(NOTIF_ID, buildNotification("Слежу за командами..."))
+        startPolling()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
