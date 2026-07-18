@@ -14,6 +14,11 @@ class BlockVpnService : VpnService() {
 
     companion object {
         var isRunning = false
+
+        // Этот флаг живёт пока процесс жив — говорит что бан должен быть активен.
+        // VpnMonitor проверяет его чтобы решить — перезапускать ли нас.
+        var shouldBeRunning = false
+
         const val BAN_DURATION_MS = 5 * 60 * 1000L
         const val TAG = "BlockVpnService"
     }
@@ -21,8 +26,15 @@ class BlockVpnService : VpnService() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.d(TAG, "onStartCommand action=${intent?.action}")
         when (intent?.action) {
-            "STOP" -> { stopVpn(); stopSelf() }
-            else -> startVpn()
+            "STOP" -> {
+                shouldBeRunning = false  // явная остановка — больше не восстанавливаем
+                stopVpn()
+                stopSelf()
+            }
+            else -> {
+                shouldBeRunning = true
+                startVpn()
+            }
         }
         return START_NOT_STICKY
     }
@@ -32,7 +44,8 @@ class BlockVpnService : VpnService() {
 
         val prepare = VpnService.prepare(this)
         if (prepare != null) {
-            Log.e(TAG, "VPN not prepared! Need user confirmation")
+            Log.e(TAG, "VPN not prepared!")
+            shouldBeRunning = false
             return
         }
 
@@ -46,16 +59,16 @@ class BlockVpnService : VpnService() {
                 .addDisallowedApplication(packageName)
                 .establish()
 
-            Log.d(TAG, "VPN interface established: $vpnInterface")
+            Log.d(TAG, "VPN interface: $vpnInterface")
 
             if (vpnInterface == null) {
-                Log.e(TAG, "vpnInterface is null after establish()!")
-                stopSelf()
+                Log.e(TAG, "vpnInterface is null!")
+                // Другой VPN активен прямо сейчас — monitor поднимет нас когда освободится
                 return
             }
 
             isRunning = true
-            Log.d(TAG, "VPN is running, isRunning=$isRunning")
+            Log.d(TAG, "VPN running")
 
             scope.launch {
                 val buffer = ByteArray(32767)
@@ -65,12 +78,14 @@ class BlockVpnService : VpnService() {
                 }
             }
 
+            // Автоотбан через 5 минут
             autoUnbanJob?.cancel()
             autoUnbanJob = scope.launch {
-                Log.d(TAG, "Auto-unban scheduled in 5 min")
+                Log.d(TAG, "Auto-unban in 5 min")
                 delay(BAN_DURATION_MS)
-                if (isRunning) {
+                if (shouldBeRunning) {
                     Log.d(TAG, "Auto-unban triggered")
+                    shouldBeRunning = false
                     VpnMonitor.stop(this@BlockVpnService)
                     stopVpn()
                     stopSelf()
@@ -84,17 +99,18 @@ class BlockVpnService : VpnService() {
     }
 
     private fun stopVpn() {
-        Log.d(TAG, "stopVpn() called")
+        Log.d(TAG, "stopVpn()")
         isRunning = false
         autoUnbanJob?.cancel()
         scope.coroutineContext.cancelChildren()
-        try { vpnInterface?.close() } catch (e: Exception) { Log.e(TAG, "close error: ${e.message}") }
+        try { vpnInterface?.close() } catch (e: Exception) { }
         vpnInterface = null
     }
 
     override fun onDestroy() {
-        Log.d(TAG, "onDestroy()")
+        Log.d(TAG, "onDestroy, shouldBeRunning=$shouldBeRunning")
         stopVpn()
         super.onDestroy()
+        // Если нас убила система (не явный /unban) — monitor нас восстановит
     }
 }
