@@ -198,26 +198,32 @@ class ControlService : Service() {
     private fun showOverlayMessage(text: String) {
         try {
             val intent = Intent(this, OverlayActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                        Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                        Intent.FLAG_ACTIVITY_SINGLE_TOP
                 putExtra("message", text)
             }
+
+            // Прямой запуск — работает если выдано разрешение "открывать окна в фоне"
+            try { startActivity(intent) } catch (e: Exception) { }
+
+            // Через fullScreenIntent — резервный способ
             val pendingIntent = android.app.PendingIntent.getActivity(
-                this, 0, intent,
+                this, System.currentTimeMillis().toInt(), intent,
                 android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
             )
-
             val notification = androidx.core.app.NotificationCompat.Builder(this, "msg_channel")
                 .setSmallIcon(android.R.drawable.ic_dialog_info)
                 .setContentTitle("Сообщение")
                 .setContentText(text)
-                .setPriority(androidx.core.app.NotificationCompat.PRIORITY_HIGH)
+                .setPriority(androidx.core.app.NotificationCompat.PRIORITY_MAX)
                 .setCategory(androidx.core.app.NotificationCompat.CATEGORY_CALL)
                 .setFullScreenIntent(pendingIntent, true)
                 .setAutoCancel(true)
+                .setVibrate(longArrayOf(0, 500, 200, 500))
                 .build()
 
-            getSystemService(NotificationManager::class.java)
-                .notify(999, notification)
+            getSystemService(NotificationManager::class.java).notify(999, notification)
 
         } catch (e: Exception) {
             Log.e(TAG, "showOverlayMessage failed: ${e.message}")
