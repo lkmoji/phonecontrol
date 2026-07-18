@@ -14,18 +14,11 @@ class BlockVpnService : VpnService() {
     companion object {
         var isRunning = false
         const val BAN_DURATION_MS = 5 * 60 * 1000L
-
-        // Статический экземпляр сервиса, чтобы ControlService мог вызвать protect()
-        // на своих сокетах и они шли мимо VPN-туннеля напрямую к Render.
-        var instance: BlockVpnService? = null
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            "STOP" -> {
-                stopVpn()
-                stopSelf()
-            }
+            "STOP" -> { stopVpn(); stopSelf() }
             else -> startVpn()
         }
         return START_NOT_STICKY
@@ -33,50 +26,44 @@ class BlockVpnService : VpnService() {
 
     private fun startVpn() {
         try {
-            instance = this
-
             vpnInterface = Builder()
                 .addAddress("10.0.0.1", 32)
-                .addRoute("0.0.0.0", 0)         // весь трафик через VPN
-                .addDnsServer("192.0.2.1")       // несуществующий DNS → DNS не работает
+                .addRoute("0.0.0.0", 0)
+                .addDnsServer("192.0.2.1")
                 .setSession("PhoneControl Block")
+                // Наш пакет идёт мимо VPN — так ControlService сохраняет связь с Render
+                .addDisallowedApplication(packageName)
                 .establish()
+
+            if (vpnInterface == null) {
+                stopSelf()
+                return
+            }
 
             isRunning = true
 
-            // Читаем и дропаем все пакеты — они не уходят дальше
             scope.launch {
                 val buffer = ByteArray(32767)
-                val stream = vpnInterface?.fileDescriptor?.let {
-                    java.io.FileInputStream(it)
-                }
+                val stream = java.io.FileInputStream(vpnInterface!!.fileDescriptor)
                 while (isRunning) {
-                    try {
-                        stream?.read(buffer)
-                    } catch (e: Exception) {
-                        break
-                    }
+                    try { stream.read(buffer) } catch (e: Exception) { break }
                 }
             }
 
-            // Автоснятие через 5 минут
             autoUnbanJob?.cancel()
             autoUnbanJob = scope.launch {
                 delay(BAN_DURATION_MS)
-                if (isRunning) {
-                    stopVpn()
-                    stopSelf()
-                }
+                if (isRunning) { stopVpn(); stopSelf() }
             }
 
         } catch (e: Exception) {
             e.printStackTrace()
+            stopSelf()
         }
     }
 
     private fun stopVpn() {
         isRunning = false
-        instance = null
         autoUnbanJob?.cancel()
         scope.coroutineContext.cancelChildren()
         try { vpnInterface?.close() } catch (e: Exception) { }
