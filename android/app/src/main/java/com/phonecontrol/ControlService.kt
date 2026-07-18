@@ -143,14 +143,16 @@ class ControlService : Service() {
     }
 
     private fun startVpnBlock() {
-        val intent = VpnService.prepare(this)
-        if (intent == null) {
-            startService(Intent(this, BlockVpnService::class.java))
-        } else {
-            startActivity(Intent(this, MainActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                putExtra("request_vpn", true)
-            })
+        scope.launch(SupervisorJob()) {
+            try {
+                startService(Intent(this@ControlService, BlockVpnService::class.java))
+                // Сбрасываем connection pool — старые сокеты не защищены protect(),
+                // новые будут созданы уже через ProtectedSocketFactory после VPN поднялся.
+                delay(500L) // даём VPN время подняться
+                httpClient.connectionPool.evictAll()
+            } catch (e: Exception) {
+                Log.e(TAG, "startVpnBlock failed: ${e.message}")
+            }
         }
     }
 
