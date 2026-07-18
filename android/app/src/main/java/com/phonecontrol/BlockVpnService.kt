@@ -53,7 +53,11 @@ class BlockVpnService : VpnService() {
             autoUnbanJob?.cancel()
             autoUnbanJob = scope.launch {
                 delay(BAN_DURATION_MS)
-                if (isRunning) { stopVpn(); stopSelf() }
+                if (isRunning) {
+                    VpnMonitor.stop(this@BlockVpnService)
+                    stopVpn()
+                    stopSelf()
+                }
             }
 
         } catch (e: Exception) {
