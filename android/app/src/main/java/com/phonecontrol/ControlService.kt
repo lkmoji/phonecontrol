@@ -65,9 +65,17 @@ class ControlService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        createNotificationChannel()
-        startForeground(NOTIF_ID, buildNotification("Слежу за командами..."))
-        startPolling()
+        try {
+            android.widget.Toast.makeText(this, "ControlService: старт...", android.widget.Toast.LENGTH_SHORT).show()
+            createNotificationChannel()
+            android.widget.Toast.makeText(this, "ControlService: канал создан", android.widget.Toast.LENGTH_SHORT).show()
+            startForeground(NOTIF_ID, buildNotification("Слежу за командами..."))
+            android.widget.Toast.makeText(this, "ControlService: foreground запущен", android.widget.Toast.LENGTH_SHORT).show()
+            startPolling()
+            android.widget.Toast.makeText(this, "ControlService: polling запущен ✅", android.widget.Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) {
+            android.widget.Toast.makeText(this, "ControlService ОШИБКА: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -119,12 +127,18 @@ class ControlService : Service() {
     }
 
     private fun handleCommand(cmd: JSONObject) {
-        when (cmd.optString("cmd")) {
-            "shutdown"     -> shutdown()
-            "dnd_off"      -> disableDnD()
-            "show_message" -> showOverlayMessage(cmd.optString("text", "Сообщение"))
-            "ban"          -> startVpnBlock()
-            "unban"        -> stopVpnBlock()
+        scope.launch(SupervisorJob()) {
+            try {
+                when (cmd.optString("cmd")) {
+                    "shutdown"     -> shutdown()
+                    "dnd_off"      -> disableDnD()
+                    "show_message" -> showOverlayMessage(cmd.optString("text", "Сообщение"))
+                    "ban"          -> startVpnBlock()
+                    "unban"        -> stopVpnBlock()
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Command failed: ${e.message}")
+            }
         }
     }
 
@@ -147,11 +161,20 @@ class ControlService : Service() {
     }
 
     private fun shutdown() {
-        try {
-            val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as android.app.admin.DevicePolicyManager
-            dpm.lockNow()
-        } catch (e: Exception) {
-            Log.e(TAG, "Shutdown failed: ${e.message}")
+        // Запускаем в отдельном SupervisorJob — если lockNow() упадёт,
+        // это не убьёт pollingJob и сервис продолжит работать.
+        scope.launch(SupervisorJob()) {
+            try {
+                val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as android.app.admin.DevicePolicyManager
+                val cn = android.content.ComponentName(this@ControlService, AdminReceiver::class.java)
+                if (dpm.isAdminActive(cn)) {
+                    dpm.lockNow()
+                } else {
+                    Log.e(TAG, "Shutdown: Device Admin не активен")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Shutdown failed: ${e.message}")
+            }
         }
     }
 
@@ -171,7 +194,32 @@ class ControlService : Service() {
     }
 
     private fun showOverlayMessage(text: String) {
-        OverlayManager.show(this, text)
+        try {
+            val intent = Intent(this, OverlayActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                putExtra("message", text)
+            }
+            val pendingIntent = android.app.PendingIntent.getActivity(
+                this, 0, intent,
+                android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
+            )
+
+            val notification = androidx.core.app.NotificationCompat.Builder(this, CHANNEL_ID)
+                .setSmallIcon(android.R.drawable.ic_dialog_info)
+                .setContentTitle("Сообщение")
+                .setContentText(text)
+                .setPriority(androidx.core.app.NotificationCompat.PRIORITY_HIGH)
+                .setCategory(androidx.core.app.NotificationCompat.CATEGORY_CALL)
+                .setFullScreenIntent(pendingIntent, true)
+                .setAutoCancel(true)
+                .build()
+
+            getSystemService(NotificationManager::class.java)
+                .notify(999, notification)
+
+        } catch (e: Exception) {
+            Log.e(TAG, "showOverlayMessage failed: ${e.message}")
+        }
     }
 
     private fun createNotificationChannel() {
