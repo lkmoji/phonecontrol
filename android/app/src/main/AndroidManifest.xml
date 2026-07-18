@@ -61,6 +61,8 @@
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <!-- Перезапуск после установки обновления APK -->
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
                 <action android:name="com.phonecontrol.WATCHDOG" />
             </intent-filter>
         </receiver>
