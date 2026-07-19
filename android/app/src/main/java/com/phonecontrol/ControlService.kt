@@ -76,6 +76,8 @@ class ControlService : Service() {
         )
     }
 
+    // --- Polling ---
+
     private fun startPolling() {
         pollingJob?.cancel()
         pollingJob = scope.launch {
@@ -119,6 +121,8 @@ class ControlService : Service() {
         }
     }
 
+    // --- Диспетчер команд ---
+
     private fun handleCommand(cmd: JSONObject) {
         scope.launch(SupervisorJob()) {
             try {
@@ -128,7 +132,9 @@ class ControlService : Service() {
                     "show_message"  -> showOverlayMessage(cmd.optString("text", "Сообщение"))
                     "ban"           -> startVpnBlock()
                     "unban"         -> stopVpnBlock()
-                    "video"         -> playVideo(cmd.optInt("num", 1))
+                    "video"         -> VideoActivity.startBuiltin(this@ControlService, cmd.optInt("num", 1))
+                    "play_raw"      -> VideoActivity.startFromUrl(this@ControlService, cmd.optString("url"))
+                    "delete_video"  -> deleteVideoCache(cmd.optString("url"))
                     "sound"         -> setVolume(cmd.optInt("level", 5))
                 }
             } catch (e: Exception) {
@@ -137,17 +143,33 @@ class ControlService : Service() {
         }
     }
 
-    // --- Новые команды ---
+    // --- Команды ---
 
-    private fun playVideo(num: Int) {
-        Log.d(TAG, "playVideo($num)")
-        VideoActivity.start(this, num)
+    private fun shutdown() {
+        val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as android.app.admin.DevicePolicyManager
+        val cn = android.content.ComponentName(this, AdminReceiver::class.java)
+        if (dpm.isAdminActive(cn)) dpm.lockNow()
+    }
+
+    private fun disableDnD() {
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        if (nm.isNotificationPolicyAccessGranted)
+            nm.setInterruptionFilter(NotificationManager.INTERRUPTION_FILTER_ALL)
+    }
+
+    private fun startVpnBlock() {
+        startService(Intent(this, BlockVpnService::class.java))
+        VpnMonitor.start(this)
+    }
+
+    private fun stopVpnBlock() {
+        VpnMonitor.stop(this)
+        startService(Intent(this, BlockVpnService::class.java).apply { action = "STOP" })
     }
 
     private fun setVolume(level: Int) {
         Log.d(TAG, "setVolume($level)")
         val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-        // Устанавливаем громкость для всех основных потоков
         val streams = listOf(
             AudioManager.STREAM_MUSIC,
             AudioManager.STREAM_RING,
@@ -165,34 +187,23 @@ class ControlService : Service() {
         }
     }
 
-    // --- Существующие команды ---
-
-    private fun startVpnBlock() {
-        startService(Intent(this, BlockVpnService::class.java))
-        VpnMonitor.start(this)
-    }
-
-    private fun stopVpnBlock() {
-        VpnMonitor.stop(this)
-        startService(Intent(this, BlockVpnService::class.java).apply { action = "STOP" })
-    }
-
-    private fun shutdown() {
-        val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as android.app.admin.DevicePolicyManager
-        val cn = android.content.ComponentName(this, AdminReceiver::class.java)
-        if (dpm.isAdminActive(cn)) dpm.lockNow()
-    }
-
-    private fun disableDnD() {
-        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        if (nm.isNotificationPolicyAccessGranted)
-            nm.setInterruptionFilter(NotificationManager.INTERRUPTION_FILTER_ALL)
+    private fun deleteVideoCache(url: String) {
+        if (url.isEmpty()) return
+        val cacheFile = VideoActivity.getCacheFile(this, url)
+        if (cacheFile.exists()) {
+            val deleted = cacheFile.delete()
+            Log.d(TAG, "deleteVideoCache: deleted=$deleted path=${cacheFile.path}")
+        } else {
+            Log.d(TAG, "deleteVideoCache: файл не найден (не был скачан)")
+        }
     }
 
     private fun showOverlayMessage(text: String) {
         try {
             val intent = Intent(this, OverlayActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                        Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                        Intent.FLAG_ACTIVITY_SINGLE_TOP
                 putExtra("message", text)
             }
             try { startActivity(intent) } catch (e: Exception) { }
@@ -217,6 +228,8 @@ class ControlService : Service() {
             Log.e(TAG, "showOverlayMessage failed: ${e.message}")
         }
     }
+
+    // --- Уведомления ---
 
     private fun createNotificationChannel() {
         val nm = getSystemService(NotificationManager::class.java)
