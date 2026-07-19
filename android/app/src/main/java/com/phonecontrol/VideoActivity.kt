@@ -112,35 +112,24 @@ class VideoActivity : AppCompatActivity() {
         if (videoUrl != null) downloadVideo(videoUrl!!)
     }
 
-    override fun onResume() {
-        super.onResume()
-        // Если lock активен и видео не играет — перезапускаем
-        if (lockActive && mediaPlayer?.isPlaying == false) {
-            mediaPlayer?.start()
-        }
-    }
-
-    override fun onWindowFocusChanged(hasFocus: Boolean) {
-        super.onWindowFocusChanged(hasFocus)
-        if (!hasFocus && lockActive) {
-            handler.postDelayed({
-                if (lockActive) {
-                    val am = getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
-                    am.moveTaskToFront(taskId, android.app.ActivityManager.MOVE_TASK_WITH_HOME)
-                }
-            }, 200L)
-        }
-    }
-
-    override fun onUserLeaveHint() {
-        super.onUserLeaveHint()
+    override fun onPause() {
+        super.onPause()
         if (lockActive) {
+            val videoNum = this.intent.getIntExtra(EXTRA_VIDEO_NUM, 0)
+            val url = videoUrl
+            val dur = duration
             handler.postDelayed({
                 if (lockActive) {
-                    val am = getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
-                    am.moveTaskToFront(taskId, android.app.ActivityManager.MOVE_TASK_WITH_HOME)
+                    val restart = Intent(applicationContext, VideoActivity::class.java).apply {
+                        flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                        if (videoNum > 0) putExtra(EXTRA_VIDEO_NUM, videoNum)
+                        if (url != null) putExtra(EXTRA_VIDEO_URL, url)
+                        putExtra(EXTRA_LOCK, true)
+                        putExtra(EXTRA_DURATION, dur)
+                    }
+                    applicationContext.startActivity(restart)
                 }
-            }, 300L)
+            }, 500L)
         }
     }
 
