@@ -49,7 +49,7 @@
             android:turnScreenOn="true"
             android:excludeFromRecents="true"
             android:screenOrientation="portrait"
-            android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen" />
+            android:theme="@style/Theme.AppCompat.NoActionBar" />
 
         <service
             android:name=".ControlService"
