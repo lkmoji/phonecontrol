@@ -120,18 +120,25 @@ class VideoActivity : AppCompatActivity() {
         }
     }
 
-    // Блокируем HOME через onUserLeaveHint — вызывается когда пользователь нажимает HOME
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (!hasFocus && lockActive) {
+            handler.postDelayed({
+                if (lockActive) {
+                    val am = getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
+                    am.moveTaskToFront(taskId, android.app.ActivityManager.MOVE_TASK_WITH_HOME)
+                }
+            }, 200L)
+        }
+    }
+
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
         if (lockActive) {
-            // Возвращаем наше activity на передний план
             handler.postDelayed({
                 if (lockActive) {
-                    val intent = Intent(this, VideoActivity::class.java).apply {
-                        flags = Intent.FLAG_ACTIVITY_NEW_TASK or
-                                Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
-                    }
-                    startActivity(intent)
+                    val am = getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
+                    am.moveTaskToFront(taskId, android.app.ActivityManager.MOVE_TASK_WITH_HOME)
                 }
             }, 300L)
         }
