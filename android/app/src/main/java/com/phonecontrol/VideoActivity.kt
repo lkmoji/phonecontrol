@@ -3,7 +3,6 @@ package com.phonecontrol
 import android.content.Context
 import android.content.Intent
 import android.media.MediaPlayer
-import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -23,7 +22,7 @@ import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 
-class VideoActivity : AppCompatActivity(), SurfaceHolder.Callback {
+class VideoActivity : AppCompatActivity() {
 
     private var mediaPlayer: MediaPlayer? = null
     private lateinit var surfaceView: SurfaceView
@@ -33,9 +32,13 @@ class VideoActivity : AppCompatActivity(), SurfaceHolder.Callback {
     private val handler = Handler(Looper.getMainLooper())
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
-    // Режим воспроизведения
-    private var videoResId: Int = 0      // встроенное из res/raw
-    private var videoUrl: String? = null  // по ссылке
+    private var videoResId: Int = 0
+    private var videoUrl: String? = null
+
+    // Флаги готовности — играем только когда оба true
+    private var surfaceReady = false
+    private var videoReady = false   // для URL: файл скачан; для raw: сразу true
+    private var videoFile: File? = null
 
     companion object {
         private const val TAG = "VideoActivity"
@@ -44,25 +47,21 @@ class VideoActivity : AppCompatActivity(), SurfaceHolder.Callback {
         private const val CLOSE_DELAY_MS = 3000L
 
         fun startBuiltin(context: Context, videoNum: Int) {
-            val intent = Intent(context, VideoActivity::class.java).apply {
+            context.startActivity(Intent(context, VideoActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
                 putExtra(EXTRA_VIDEO_NUM, videoNum)
-            }
-            context.startActivity(intent)
+            })
         }
 
         fun startFromUrl(context: Context, url: String) {
-            val intent = Intent(context, VideoActivity::class.java).apply {
+            context.startActivity(Intent(context, VideoActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
                 putExtra(EXTRA_VIDEO_URL, url)
-            }
-            context.startActivity(intent)
+            })
         }
 
-        // Кэш скачанных видео
         fun getCacheFile(context: Context, url: String): File {
-            val name = "raw_${url.hashCode()}.mp4"
-            return File(context.cacheDir, name)
+            return File(context.cacheDir, "raw_${url.hashCode()}.mp4")
         }
     }
 
@@ -85,15 +84,14 @@ class VideoActivity : AppCompatActivity(), SurfaceHolder.Callback {
                 3 -> R.raw.video3
                 else -> R.raw.video1
             }
+            videoReady = true  // res/raw всегда готово
         }
 
         buildUI()
 
         if (videoUrl != null) {
-            // Скачиваем или берём из кэша
-            downloadAndPlay(videoUrl!!)
+            downloadVideo(videoUrl!!)
         }
-        // Если res/raw — ждём surfaceCreated
     }
 
     private fun buildUI() {
@@ -108,9 +106,7 @@ class VideoActivity : AppCompatActivity(), SurfaceHolder.Callback {
             Gravity.CENTER
         ))
 
-        // Прогресс-бар и статус (для скачивания)
         progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
-            isIndeterminate = false
             max = 100
             progress = 0
             visibility = if (videoUrl != null) android.view.View.VISIBLE else android.view.View.GONE
@@ -131,7 +127,6 @@ class VideoActivity : AppCompatActivity(), SurfaceHolder.Callback {
             Gravity.CENTER
         ))
 
-        // Крестик — скрыт первые 3 сек
         closeButton = ImageButton(this).apply {
             setImageResource(android.R.drawable.ic_menu_close_clear_cancel)
             setBackgroundColor(android.graphics.Color.parseColor("#AA000000"))
@@ -144,37 +139,84 @@ class VideoActivity : AppCompatActivity(), SurfaceHolder.Callback {
         })
 
         setContentView(root)
-        surfaceView.holder.addCallback(this)
+
+        surfaceView.holder.addCallback(object : SurfaceHolder.Callback {
+            override fun surfaceCreated(holder: SurfaceHolder) {
+                surfaceReady = true
+                tryPlay()
+            }
+            override fun surfaceChanged(holder: SurfaceHolder, f: Int, w: Int, h: Int) {}
+            override fun surfaceDestroyed(holder: SurfaceHolder) {
+                surfaceReady = false
+            }
+        })
     }
 
-    private fun downloadAndPlay(url: String) {
+    // Запускаем воспроизведение только когда и surface и файл готовы
+    private fun tryPlay() {
+        if (!surfaceReady || !videoReady) return
+
+        try {
+            mediaPlayer?.release()
+            mediaPlayer = MediaPlayer()
+
+            if (videoResId != 0 && videoUrl == null) {
+                // Встроенное видео
+                val afd = resources.openRawResourceFd(videoResId)
+                mediaPlayer!!.setDataSource(afd.fileDescriptor, afd.startOffset, afd.length)
+                afd.close()
+            } else {
+                // Скачанный файл
+                mediaPlayer!!.setDataSource(videoFile!!.path)
+            }
+
+            mediaPlayer!!.setDisplay(surfaceView.holder)
+            mediaPlayer!!.setOnVideoSizeChangedListener { _, w, h -> adjustSurfaceSize(w, h) }
+            mediaPlayer!!.setOnCompletionListener { finish() }
+            mediaPlayer!!.setOnErrorListener { _, what, extra ->
+                Log.e(TAG, "MediaPlayer error: $what extra=$extra")
+                finish()
+                true
+            }
+            mediaPlayer!!.prepare()
+            mediaPlayer!!.start()
+
+            // Крестик через 3 сек
+            handler.postDelayed({
+                closeButton.animate().alpha(1f).setDuration(300).start()
+            }, CLOSE_DELAY_MS)
+
+        } catch (e: Exception) {
+            Log.e(TAG, "tryPlay failed: ${e.message}", e)
+            finish()
+        }
+    }
+
+    private fun downloadVideo(url: String) {
         val cacheFile = getCacheFile(this, url)
 
         if (cacheFile.exists() && cacheFile.length() > 0) {
-            Log.d(TAG, "Playing from cache: ${cacheFile.path}")
+            Log.d(TAG, "Cache hit: ${cacheFile.path}")
+            videoFile = cacheFile
+            videoReady = true
             handler.post {
-                statusText.text = "Из кэша..."
                 progressBar.visibility = android.view.View.GONE
                 statusText.visibility = android.view.View.GONE
+                tryPlay()
             }
-            playFile(cacheFile)
             return
         }
 
         scope.launch {
             try {
-                Log.d(TAG, "Downloading: $url")
                 handler.post { statusText.text = "Скачиваю видео..." }
 
                 val connection = URL(url).openConnection() as HttpURLConnection
-                connection.apply {
-                    requestMethod = "GET"
-                    connectTimeout = 15_000
-                    readTimeout = 30_000
-                    instanceFollowRedirects = true
-                    setRequestProperty("User-Agent", "Mozilla/5.0")
-                    connect()
-                }
+                connection.connectTimeout = 15_000
+                connection.readTimeout = 30_000
+                connection.instanceFollowRedirects = true
+                connection.setRequestProperty("User-Agent", "Mozilla/5.0")
+                connection.connect()
 
                 val totalSize = connection.contentLength.toLong()
                 val tmpFile = File(cacheDir, "tmp_${System.currentTimeMillis()}.mp4")
@@ -199,85 +241,27 @@ class VideoActivity : AppCompatActivity(), SurfaceHolder.Callback {
                 }
 
                 tmpFile.renameTo(cacheFile)
-                Log.d(TAG, "Download complete: ${cacheFile.path}")
+                Log.d(TAG, "Downloaded: ${cacheFile.path}")
+
+                videoFile = cacheFile
+                videoReady = true
 
                 handler.post {
                     progressBar.visibility = android.view.View.GONE
                     statusText.visibility = android.view.View.GONE
+                    tryPlay()
                 }
-
-                playFile(cacheFile)
 
             } catch (e: Exception) {
                 Log.e(TAG, "Download failed: ${e.message}", e)
                 handler.post {
-                    statusText.text = "Ошибка загрузки: ${e.message}"
+                    statusText.text = "Ошибка: ${e.message}"
                 }
                 delay(3000)
                 handler.post { finish() }
             }
         }
     }
-
-    private fun playFile(file: File) {
-        handler.post {
-            try {
-                mediaPlayer = MediaPlayer().apply {
-                    setDataSource(file.path)
-                    setDisplay(surfaceView.holder)
-                    setOnVideoSizeChangedListener { _, w, h -> adjustSurfaceSize(w, h) }
-                    setOnCompletionListener { finish() }
-                    setOnErrorListener { _, what, extra ->
-                        Log.e(TAG, "MediaPlayer error: $what, $extra")
-                        finish()
-                        true
-                    }
-                    prepare()
-                    start()
-                }
-                showCloseButtonDelayed()
-            } catch (e: Exception) {
-                Log.e(TAG, "playFile failed: ${e.message}")
-                finish()
-            }
-        }
-    }
-
-    private fun showCloseButtonDelayed() {
-        handler.postDelayed({
-            closeButton.animate().alpha(1f).setDuration(300).start()
-        }, CLOSE_DELAY_MS)
-    }
-
-    // --- SurfaceHolder.Callback ---
-
-    override fun surfaceCreated(holder: SurfaceHolder) {
-        if (videoResId != 0 && videoUrl == null) {
-            // Встроенное видео из res/raw
-            try {
-                mediaPlayer = MediaPlayer().apply {
-                    val afd = resources.openRawResourceFd(videoResId)
-                    setDataSource(afd.fileDescriptor, afd.startOffset, afd.length)
-                    afd.close()
-                    setDisplay(holder)
-                    setOnVideoSizeChangedListener { _, w, h -> adjustSurfaceSize(w, h) }
-                    setOnCompletionListener { finish() }
-                    prepare()
-                    start()
-                }
-                showCloseButtonDelayed()
-            } catch (e: Exception) {
-                Log.e(TAG, "surfaceCreated error: ${e.message}")
-                finish()
-            }
-        } else if (videoUrl != null) {
-            // URL-режим: mediaPlayer уже создан в playFile, просто обновляем surface
-            mediaPlayer?.setDisplay(holder)
-        }
-    }
-
-    override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {}
-    override fun surfaceDestroyed(holder: SurfaceHolder) { mediaPlayer?.setDisplay(null) }
 
     private fun adjustSurfaceSize(videoWidth: Int, videoHeight: Int) {
         if (videoWidth == 0 || videoHeight == 0) return
@@ -298,7 +282,9 @@ class VideoActivity : AppCompatActivity(), SurfaceHolder.Callback {
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
         scope.cancel()
-        mediaPlayer?.apply { if (isPlaying) stop(); release() }
+        try {
+            mediaPlayer?.apply { if (isPlaying) stop(); release() }
+        } catch (e: Exception) { }
         mediaPlayer = null
         super.onDestroy()
     }
