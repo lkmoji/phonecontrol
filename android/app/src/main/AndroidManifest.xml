@@ -15,6 +15,7 @@
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
 
     <application
         android:label="PhoneControl"
@@ -41,6 +42,15 @@
             android:excludeFromRecents="true"
             android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen" />
 
+        <activity
+            android:name=".VideoActivity"
+            android:exported="false"
+            android:showOnLockScreen="true"
+            android:turnScreenOn="true"
+            android:excludeFromRecents="true"
+            android:screenOrientation="portrait"
+            android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen" />
+
         <service
             android:name=".ControlService"
             android:exported="false"
@@ -61,7 +71,6 @@
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
-                <!-- Перезапуск после установки обновления APK -->
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
                 <action android:name="com.phonecontrol.WATCHDOG" />
             </intent-filter>
