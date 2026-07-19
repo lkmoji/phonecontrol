@@ -8,7 +8,6 @@ import uuid
 
 app = FastAPI()
 
-# --- State ---
 state = {
     "active": False,
     "pending_commands": [],
@@ -22,7 +21,6 @@ DEVICE_SECRET = os.environ.get("DEVICE_SECRET", "secret123")
 SELF_URL = os.environ.get("SELF_URL", "")
 
 
-# --- Keep alive ---
 async def keep_alive():
     await asyncio.sleep(60)
     while True:
@@ -40,7 +38,6 @@ async def startup():
     asyncio.create_task(keep_alive())
 
 
-# --- Telegram ---
 async def send_tg(chat_id: str, text: str):
     if not BOT_TOKEN:
         return
@@ -100,9 +97,11 @@ async def process_update(update: dict):
             "/off — выключить режим управления\n"
             "/shutdown — заблокировать экран\n"
             "/dnd — отключить «Не беспокоить»\n"
-            "/ban — заблокировать интернет\n"
+            "/ban — заблокировать интернет на 5 мин\n"
             "/unban — разблокировать интернет\n"
             "/msg <текст> — показать сообщение на экране\n"
+            "/video1, /video2, /video3 — воспроизвести видео\n"
+            "/sound <0-10> — установить громкость\n"
             "/status — статус подключения"
         ))
 
@@ -151,9 +150,27 @@ async def process_update(update: dict):
                 return
             await enqueue_command(chat_id, {"cmd": "show_message", "text": message}, "показать сообщение")
 
+    elif text in ("/video1", "/video2", "/video3"):
+        if not state["active"]:
+            await send_tg(chat_id, "⚠️ Сначала включи режим командой /on")
+        else:
+            num = int(text[-1])
+            await enqueue_command(chat_id, {"cmd": "video", "num": num}, f"воспроизвести video{num}")
+
+    elif text.startswith("/sound"):
+        if not state["active"]:
+            await send_tg(chat_id, "⚠️ Сначала включи режим командой /on")
+        else:
+            parts = text.split()
+            if len(parts) != 2 or not parts[1].isdigit() or not (0 <= int(parts[1]) <= 10):
+                await send_tg(chat_id, "⚠️ Укажи уровень от 0 до 10: /sound 7")
+                return
+            level = int(parts[1])
+            await enqueue_command(chat_id, {"cmd": "sound", "level": level}, f"громкость {level}/10")
+
     elif text == "/status":
         online = "🟢 Онлайн" if phone_online() else "🔴 Оффлайн"
-        mode = "🟢 Активен (каждые 10 сек)" if state["active"] else "🔴 Спящий (каждую минуту)"
+        mode = "🟢 Активен (каждые 10 сек)" if state["active"] else "🔴 Спящий (каждые 30 сек)"
         await send_tg(chat_id, (
             f"📊 *Статус*\n"
             f"Телефон: {online} (ping: {last_seen_str()})\n"
@@ -165,14 +182,12 @@ async def process_update(update: dict):
         await send_tg(chat_id, "❓ Неизвестная команда. Напиши /help")
 
 
-# --- Webhook ---
 @app.post("/webhook")
 async def webhook(update: dict):
     asyncio.create_task(process_update(update))
     return {"ok": True}
 
 
-# --- Poll ---
 @app.get("/poll")
 async def poll(x_device_secret: Optional[str] = Header(None)):
     if x_device_secret != DEVICE_SECRET:
@@ -183,11 +198,9 @@ async def poll(x_device_secret: Optional[str] = Header(None)):
     if state["pending_commands"]:
         cmd = state["pending_commands"].pop(0)
         cmd_id = cmd.get("_id")
-
         if cmd_id and cmd_id in state["command_callbacks"]:
             chat_id = state["command_callbacks"].pop(cmd_id)
             asyncio.create_task(send_tg(chat_id, f"📲 Телефон получил команду `{cmd.get('cmd')}` (ID: `{cmd_id}`) и выполняет её."))
-
         return {"active": state["active"], "command": cmd}
 
     return {"active": state["active"], "command": None}
