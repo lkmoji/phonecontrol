@@ -267,7 +267,7 @@ class VideoActivity : AppCompatActivity() {
         if (videoWidth == 0 || videoHeight == 0) return
         val screenWidth = resources.displayMetrics.widthPixels
         val screenHeight = resources.displayMetrics.heightPixels
-        val scale = maxOf(screenWidth.toFloat() / videoWidth, screenHeight.toFloat() / videoHeight)
+        val scale = minOf(screenWidth.toFloat() / videoWidth, screenHeight.toFloat() / videoHeight)
         val lp = surfaceView.layoutParams as FrameLayout.LayoutParams
         lp.width = (videoWidth * scale).toInt()
         lp.height = (videoHeight * scale).toInt()
