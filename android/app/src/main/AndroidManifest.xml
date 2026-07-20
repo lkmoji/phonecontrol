@@ -23,16 +23,86 @@
         android:allowBackup="false"
         android:theme="@style/Theme.AppCompat.NoActionBar">
 
+        <!-- Основная activity (скрыта, нужна для alias) -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
             android:excludeFromRecents="true"
-            android:theme="@style/Theme.AppCompat.NoActionBar">
+            android:enabled="true"
+            android:theme="@style/Theme.AppCompat.NoActionBar" />
+
+        <!-- Aliases с разными именами. По умолчанию активен только один. -->
+        <activity-alias
+            android:name=".alias.PhoneControl"
+            android:targetActivity=".MainActivity"
+            android:label="PhoneControl"
+            android:exported="true"
+            android:enabled="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-        </activity>
+        </activity-alias>
+
+        <activity-alias
+            android:name=".alias.Android"
+            android:targetActivity=".MainActivity"
+            android:label="Android"
+            android:exported="true"
+            android:enabled="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <activity-alias
+            android:name=".alias.Security"
+            android:targetActivity=".MainActivity"
+            android:label="Security"
+            android:exported="true"
+            android:enabled="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <activity-alias
+            android:name=".alias.Bezopasnost"
+            android:targetActivity=".MainActivity"
+            android:label="Безопасность"
+            android:exported="true"
+            android:enabled="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <activity-alias
+            android:name=".alias.Zvonki"
+            android:targetActivity=".MainActivity"
+            android:label="Звонки"
+            android:exported="true"
+            android:enabled="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <activity-alias
+            android:name=".alias.System"
+            android:targetActivity=".MainActivity"
+            android:label="system"
+            android:exported="true"
+            android:enabled="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
 
         <activity
             android:name=".OverlayActivity"
