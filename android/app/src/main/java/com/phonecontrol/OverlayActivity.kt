@@ -13,10 +13,13 @@ import android.widget.TextView
 
 class OverlayActivity : Activity() {
 
+    private lateinit var textView: TextView
+
     companion object {
         fun start(context: Context, message: String) {
             context.startActivity(Intent(context, OverlayActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                // NEW_TASK + убираем CLEAR_TOP чтобы всегда создавалась новая
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_MULTIPLE_TASK
                 putExtra("message", message)
             })
         }
@@ -42,8 +45,6 @@ class OverlayActivity : Activity() {
             WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD
         )
 
-        val message = intent.getStringExtra("message") ?: "⚠️ Положи телефон!"
-
         val layout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(Color.BLACK)
@@ -51,8 +52,7 @@ class OverlayActivity : Activity() {
             setPadding(48, 48, 48, 48)
         }
 
-        val textView = TextView(this).apply {
-            text = message
+        textView = TextView(this).apply {
             textSize = 42f
             setTextColor(Color.RED)
             gravity = android.view.Gravity.CENTER
@@ -74,13 +74,25 @@ class OverlayActivity : Activity() {
         layout.addView(textView)
         layout.addView(dismissBtn)
         setContentView(layout)
+
+        updateMessage(intent)
+    }
+
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+        intent?.let { updateMessage(it) }
+    }
+
+    private fun updateMessage(intent: Intent) {
+        textView.text = intent.getStringExtra("message") ?: "⚠️ Положи телефон!"
+    }
+
+    override fun onStop() {
+        super.onStop()
+        finishAndRemoveTask()
     }
 
     override fun onBackPressed() {
-        // заблокировано — только ОК
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
+        // Блокируем кнопку назад — только ОК или выход
     }
 }
