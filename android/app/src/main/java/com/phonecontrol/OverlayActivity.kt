@@ -77,7 +77,7 @@ class OverlayActivity : Activity() {
             setOnClickListener {
                 lockActive = false
                 canClose = true
-                finish()
+                finishAndRemoveTask()
             }
         }
 
@@ -104,6 +104,7 @@ class OverlayActivity : Activity() {
 
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
+        finishAndRemoveTask()
         super.onDestroy()
     }
 }
