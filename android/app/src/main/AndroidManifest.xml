@@ -23,7 +23,6 @@
         android:allowBackup="false"
         android:theme="@style/Theme.AppCompat.NoActionBar">
 
-        <!-- Основная activity (скрыта, нужна для alias) -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -31,7 +30,6 @@
             android:enabled="true"
             android:theme="@style/Theme.AppCompat.NoActionBar" />
 
-        <!-- Aliases с разными именами. По умолчанию активен только один. -->
         <activity-alias
             android:name=".alias.PhoneControl"
             android:targetActivity=".MainActivity"
@@ -112,6 +110,7 @@
             android:excludeFromRecents="false"
             android:taskAffinity="com.phonecontrol.msg"
             android:label="Сообщение"
+            android:launchMode="singleTask"
             android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen" />
 
         <activity
