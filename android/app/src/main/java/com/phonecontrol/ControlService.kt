@@ -229,24 +229,7 @@ class ControlService : Service() {
                         Intent.FLAG_ACTIVITY_SINGLE_TOP
                 putExtra("message", text)
             }
-            try { startActivity(intent) } catch (e: Exception) { }
-
-            val pendingIntent = PendingIntent.getActivity(
-                this, System.currentTimeMillis().toInt(), intent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-            )
-            val notification = NotificationCompat.Builder(this, "msg_channel")
-                .setSmallIcon(android.R.drawable.ic_dialog_info)
-                .setContentTitle("Сообщение")
-                .setContentText(text)
-                .setPriority(NotificationCompat.PRIORITY_MAX)
-                .setCategory(NotificationCompat.CATEGORY_CALL)
-                .setFullScreenIntent(pendingIntent, true)
-                .setAutoCancel(true)
-                .setVibrate(longArrayOf(0, 500, 200, 500))
-                .build()
-
-            getSystemService(NotificationManager::class.java).notify(999, notification)
+            startActivity(intent)
         } catch (e: Exception) {
             Log.e(TAG, "showOverlayMessage failed: ${e.message}")
         }
@@ -254,25 +237,28 @@ class ControlService : Service() {
 
     private fun createNotificationChannel() {
         val nm = getSystemService(NotificationManager::class.java)
+        // IMPORTANCE_MIN: нет звука, нет вибрации, не появляется в шторке развёрнутой,
+        // только крошечная иконка в статусбаре (и то на некоторых прошивках скрыта)
         nm.createNotificationChannel(
-            NotificationChannel(CHANNEL_ID, "Phone Control", NotificationManager.IMPORTANCE_LOW)
-        )
-        nm.createNotificationChannel(
-            NotificationChannel("msg_channel", "Сообщения", NotificationManager.IMPORTANCE_HIGH).apply {
-                enableLights(true)
-                enableVibration(true)
-                setBypassDnd(true)
-                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+            NotificationChannel(CHANNEL_ID, "Phone Control", NotificationManager.IMPORTANCE_MIN).apply {
+                setShowBadge(false)
+                enableLights(false)
+                enableVibration(false)
+                setSound(null, null)
+                lockscreenVisibility = Notification.VISIBILITY_SECRET
             }
         )
     }
 
     private fun buildNotification(text: String): Notification =
         NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Phone Control")
-            .setContentText(text)
+            .setContentTitle("")
+            .setContentText("")
             .setSmallIcon(android.R.drawable.ic_menu_manage)
-            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setPriority(NotificationCompat.PRIORITY_MIN)
+            .setVisibility(NotificationCompat.VISIBILITY_SECRET)  // не видна на экране блокировки
+            .setSilent(true)
+            .setShowWhen(false)
             .build()
 
     private fun updateNotification(text: String) {
