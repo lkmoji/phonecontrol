@@ -25,6 +25,9 @@ class ControlService : Service() {
     private var wakeLock: android.os.PowerManager.WakeLock? = null
     private var consecutiveErrors = 0
 
+    /** Уникальный ID устройства — генерируется один раз и сохраняется в SharedPreferences. */
+    private lateinit var deviceId: String
+
     companion object {
         const val CHANNEL_ID = "PhoneControlChannel"
         const val NOTIF_ID = 1
@@ -32,6 +35,18 @@ class ControlService : Service() {
         const val DEVICE_SECRET = BuildConfig.DEVICE_SECRET
         const val TAG = "ControlService"
         private const val MAX_CONSECUTIVE_ERRORS = 10
+        private const val PREFS_NAME = "phonecontrol_prefs"
+        private const val PREF_DEVICE_ID = "device_id"
+    }
+
+    /** Получить или создать постоянный DEVICE_ID. */
+    private fun getOrCreateDeviceId(): String {
+        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        return prefs.getString(PREF_DEVICE_ID, null) ?: run {
+            val newId = java.util.UUID.randomUUID().toString().replace("-", "").take(16)
+            prefs.edit().putString(PREF_DEVICE_ID, newId).apply()
+            newId
+        }
     }
 
     private val httpClient: OkHttpClient by lazy {
@@ -44,6 +59,7 @@ class ControlService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        deviceId = getOrCreateDeviceId()
         createNotificationChannel()
         startForeground(NOTIF_ID, buildNotification("Слежу за командами..."))
 
@@ -111,9 +127,13 @@ class ControlService : Service() {
     }
 
     private fun poll(): JSONObject {
+        val model = android.os.Build.MANUFACTURER.replaceFirstChar { it.uppercase() } +
+                " " + android.os.Build.MODEL
         val request = Request.Builder()
             .url("$SERVER_URL/poll")
             .addHeader("X-Device-Secret", DEVICE_SECRET)
+            .addHeader("X-Device-Id", deviceId)
+            .addHeader("X-Device-Model", model)
             .build()
         httpClient.newCall(request).execute().use { response ->
             val body = response.body?.string() ?: "{}"
