@@ -44,32 +44,70 @@ class VideoActivity : AppCompatActivity() {
     private var videoReady = false
     private var videoFile: File? = null
 
+    // Обратная связь после видео
+    private var fbMode      = "plain"
+    private var replyPrompt = "✏️ Напиши ответ:"
+    private var survey      = arrayListOf<String>()
+    private var chatId      = ""
+
     companion object {
         private const val TAG = "VideoActivity"
-        const val EXTRA_VIDEO_NUM = "video_num"
-        const val EXTRA_VIDEO_URL = "video_url"
-        const val EXTRA_LOCK = "lock"
-        const val EXTRA_DURATION = "duration"
+        const val EXTRA_VIDEO_NUM      = "video_num"
+        const val EXTRA_VIDEO_URL      = "video_url"
+        const val EXTRA_LOCK           = "lock"
+        const val EXTRA_DURATION       = "duration"
         const val EXTRA_SECONDS_WATCHED = "seconds_watched"
+        const val EXTRA_FB_MODE        = "fb_mode"
+        const val EXTRA_REPLY_PROMPT   = "reply_prompt"
+        const val EXTRA_SURVEY         = "survey"
+        const val EXTRA_CHAT_ID        = "chat_id"
 
         var lockActive = false
 
-        fun startBuiltin(context: Context, videoNum: Int, lock: Boolean = false, duration: Int = 0, secondsWatched: Int = 0) {
+        fun startBuiltin(
+            context: Context,
+            videoNum: Int,
+            lock: Boolean = false,
+            duration: Int = 0,
+            fbMode: String = "plain",
+            replyPrompt: String = "✏️ Напиши ответ:",
+            survey: List<String> = emptyList(),
+            chatId: String = "",
+            secondsWatched: Int = 0,
+        ) {
             context.startActivity(Intent(context, VideoActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
                 putExtra(EXTRA_VIDEO_NUM, videoNum)
                 putExtra(EXTRA_LOCK, lock)
                 putExtra(EXTRA_DURATION, duration)
+                putExtra(EXTRA_FB_MODE, fbMode)
+                putExtra(EXTRA_REPLY_PROMPT, replyPrompt)
+                putStringArrayListExtra(EXTRA_SURVEY, ArrayList(survey))
+                putExtra(EXTRA_CHAT_ID, chatId)
                 putExtra(EXTRA_SECONDS_WATCHED, secondsWatched)
             })
         }
 
-        fun startFromUrl(context: Context, url: String, lock: Boolean = false, duration: Int = 0, secondsWatched: Int = 0) {
+        fun startFromUrl(
+            context: Context,
+            url: String,
+            lock: Boolean = false,
+            duration: Int = 0,
+            fbMode: String = "plain",
+            replyPrompt: String = "✏️ Напиши ответ:",
+            survey: List<String> = emptyList(),
+            chatId: String = "",
+            secondsWatched: Int = 0,
+        ) {
             context.startActivity(Intent(context, VideoActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
                 putExtra(EXTRA_VIDEO_URL, url)
                 putExtra(EXTRA_LOCK, lock)
                 putExtra(EXTRA_DURATION, duration)
+                putExtra(EXTRA_FB_MODE, fbMode)
+                putExtra(EXTRA_REPLY_PROMPT, replyPrompt)
+                putStringArrayListExtra(EXTRA_SURVEY, ArrayList(survey))
+                putExtra(EXTRA_CHAT_ID, chatId)
                 putExtra(EXTRA_SECONDS_WATCHED, secondsWatched)
             })
         }
@@ -98,10 +136,14 @@ class VideoActivity : AppCompatActivity() {
             WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD
         )
 
-        videoUrl = intent.getStringExtra(EXTRA_VIDEO_URL)
-        lockMode = intent.getBooleanExtra(EXTRA_LOCK, false)
-        duration = intent.getIntExtra(EXTRA_DURATION, 0)
+        videoUrl       = intent.getStringExtra(EXTRA_VIDEO_URL)
+        lockMode       = intent.getBooleanExtra(EXTRA_LOCK, false)
+        duration       = intent.getIntExtra(EXTRA_DURATION, 0)
         secondsWatched = intent.getIntExtra(EXTRA_SECONDS_WATCHED, 0)
+        fbMode         = intent.getStringExtra(EXTRA_FB_MODE) ?: "plain"
+        replyPrompt    = intent.getStringExtra(EXTRA_REPLY_PROMPT) ?: "✏️ Напиши ответ:"
+        survey         = intent.getStringArrayListExtra(EXTRA_SURVEY) ?: arrayListOf()
+        chatId         = intent.getStringExtra(EXTRA_CHAT_ID) ?: ""
 
         val videoNum = intent.getIntExtra(EXTRA_VIDEO_NUM, 0)
         if (videoNum > 0) {
@@ -130,19 +172,22 @@ class VideoActivity : AppCompatActivity() {
     override fun onStop() {
         super.onStop()
         if (lockMode && !canClose) {
-            // Блокировка активна и таймер не вышел — перезапускаем
+            // Блокировка активна — перезапускаем с текущим прогрессом
             handler.postDelayed({
                 if (lockActive && !canClose) {
                     val videoNum = intent.getIntExtra(EXTRA_VIDEO_NUM, 0)
                     if (videoNum > 0) {
-                        startBuiltin(applicationContext, videoNum, true, duration, secondsWatched)
+                        startBuiltin(applicationContext, videoNum, true, duration,
+                            fbMode, replyPrompt, survey, chatId, secondsWatched)
                     } else {
-                        videoUrl?.let { startFromUrl(applicationContext, it, true, duration, secondsWatched) }
+                        videoUrl?.let {
+                            startFromUrl(applicationContext, it, true, duration,
+                                fbMode, replyPrompt, survey, chatId, secondsWatched)
+                        }
                     }
                 }
             }, 400L)
         } else {
-            // Блокировки нет или таймер вышел — убираем из недавних
             finishAndRemoveTask()
         }
     }
@@ -233,6 +278,7 @@ class VideoActivity : AppCompatActivity() {
                     mediaPlayer?.seekTo(0)
                     mediaPlayer?.start()
                 } else {
+                    launchFeedbackIfNeeded()
                     closeVideo()
                 }
             }
@@ -287,8 +333,25 @@ class VideoActivity : AppCompatActivity() {
                 canClose = true
                 lockActive = false
                 showCloseButton()
+                launchFeedbackIfNeeded()
             }
         }
+    }
+
+    /**
+     * После разблокировки (таймер вышел) — если задан режим обратной связи,
+     * сразу открываем OverlayActivity поверх видео.
+     */
+    private fun launchFeedbackIfNeeded() {
+        if (fbMode == "plain" || chatId.isEmpty()) return
+        OverlayActivity.start(
+            applicationContext,
+            "📋 Видео завершено. Обратная связь:",
+            fbMode,
+            replyPrompt,
+            survey,
+            chatId,
+        )
     }
 
     private fun showCloseButton() {
