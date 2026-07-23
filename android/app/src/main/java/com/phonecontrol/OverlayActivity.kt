@@ -251,7 +251,7 @@ class OverlayActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             gravity     = android.view.Gravity.CENTER_HORIZONTAL
             background  = cardBackground()
-            elevation   = dp(16f)
+            elevation   = dp(16f).toFloat()
             setPadding(dp(28), dp(32), dp(28), dp(28))
         }
 
