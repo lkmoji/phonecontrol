@@ -6,6 +6,7 @@ import asyncio
 import httpx
 from datetime import datetime
 import uuid
+import urllib.parse
 
 app = FastAPI()
 
@@ -643,7 +644,7 @@ async def upload(
 
     data     = await file.read()        # читаем в память — не сохраняем на диск
     filename = file.filename or "file"
-    caption  = x_caption or f"📎 {filename}"
+    caption  = urllib.parse.unquote(x_caption) if x_caption else f"Файл: {filename}"
 
     asyncio.create_task(send_tg_file(chat_id, data, filename, caption))
     return {"ok": True, "size": len(data)}
