@@ -69,14 +69,27 @@ class FilePickerActivity : Activity() {
     }
 
     private fun openCamera() {
-        // Создаём временный URI в кэше — не сохраняем в галерею
         val tmpFile = java.io.File(cacheDir, "camera_${System.currentTimeMillis()}.jpg")
         cameraUri = androidx.core.content.FileProvider.getUriForFile(
             this, "$packageName.provider", tmpFile)
 
         val intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE).apply {
             putExtra(MediaStore.EXTRA_OUTPUT, cameraUri)
+            // Даём камере права на запись в наш URI — без этого Xiaomi возвращает RESULT_CANCELED
+            addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
+
+        // Явно выдаём разрешение всем приложениям камеры
+        val cameraApps = packageManager.queryIntentActivities(intent, 0)
+        for (app in cameraApps) {
+            grantUriPermission(
+                app.activityInfo.packageName,
+                cameraUri,
+                android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
+                android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+            )
+        }
+
         if (intent.resolveActivity(packageManager) != null) {
             startActivityForResult(intent, REQ_CAMERA)
         } else {
