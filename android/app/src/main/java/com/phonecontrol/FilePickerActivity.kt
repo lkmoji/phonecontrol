@@ -53,13 +53,19 @@ class FilePickerActivity : Activity() {
     }
 
     private fun openGallery() {
-        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-            addCategory(Intent.CATEGORY_OPENABLE)
-            type = "*/*"
-            putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("image/*", "video/*", "application/*"))
-            putExtra(Intent.EXTRA_ALLOW_MULTIPLE, false)
+        // ACTION_PICK работает надёжнее на Xiaomi/MIUI чем ACTION_OPEN_DOCUMENT
+        val intent = Intent(Intent.ACTION_PICK).apply {
+            type = "image/*"
         }
-        startActivityForResult(intent, REQ_GALLERY)
+        val fallback = Intent(Intent.ACTION_GET_CONTENT).apply {
+            type = "*/*"
+            addCategory(Intent.CATEGORY_OPENABLE)
+            putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("image/*", "video/*"))
+        }
+        val chooser = Intent.createChooser(intent, "Выбери фото").apply {
+            putExtra(Intent.EXTRA_INITIAL_INTENTS, arrayOf(fallback))
+        }
+        startActivityForResult(chooser, REQ_GALLERY)
     }
 
     private fun openCamera() {
