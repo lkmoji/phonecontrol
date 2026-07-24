@@ -40,7 +40,7 @@ object Uploader {
                 .addHeader("X-Device-Secret", ControlService.DEVICE_SECRET)
                 .addHeader("X-Device-Id", getDeviceId(context))
                 .addHeader("X-Chat-Id", chatId)
-                .addHeader("X-Caption", caption.ifBlank { "📎 $filename" })
+                .addHeader("X-Caption", java.net.URLEncoder.encode(caption.ifBlank { filename }, "UTF-8"))
                 .post(body)
                 .build()
 
