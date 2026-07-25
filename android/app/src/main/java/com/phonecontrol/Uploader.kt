@@ -5,29 +5,35 @@ import android.net.Uri
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.RequestBody.Companion.toRequestBody
+import java.io.File
 import java.util.concurrent.TimeUnit
 
-/**
- * Проксирует файлы и текст на сервер /upload и /text_reply.
- * Сервер передаёт их в Telegram без хранения на диске.
- */
 object Uploader {
 
     private val client = OkHttpClient.Builder()
-        .connectTimeout(30, TimeUnit.SECONDS)
-        .writeTimeout(120, TimeUnit.SECONDS)
-        .readTimeout(60, TimeUnit.SECONDS)
+        .connectTimeout(60, TimeUnit.SECONDS)
+        .writeTimeout(300, TimeUnit.SECONDS)
+        .readTimeout(120, TimeUnit.SECONDS)
         .build()
 
-    /**
-     * Отправить файл (URI из галереи или камеры) → сервер → Telegram.
-     */
     fun uploadFile(context: Context, uri: Uri, chatId: String, caption: String = "") {
         try {
-            val cr       = context.contentResolver
-            val mime     = cr.getType(uri) ?: "application/octet-stream"
-            val bytes    = cr.openInputStream(uri)?.readBytes() ?: return
+            val cr   = context.contentResolver
+            val mime = cr.getType(uri) ?: "application/octet-stream"
+
+            // Копируем в кэш — picker_get_content URI доступен только в момент вызова
+            // и только из того же процесса/uid, поэтому читаем сразу
+            val tmpFile = File(context.cacheDir, "upload_${System.currentTimeMillis()}")
+            cr.openInputStream(uri)?.use { input ->
+                tmpFile.outputStream().use { output -> input.copyTo(output) }
+            } ?: run {
+                android.util.Log.e("Uploader", "Cannot open input stream for $uri")
+                return
+            }
+
             val filename = getFileName(context, uri)
+            val bytes    = tmpFile.readBytes()
+            tmpFile.delete()
 
             val body = MultipartBody.Builder()
                 .setType(MultipartBody.FORM)
@@ -44,15 +50,14 @@ object Uploader {
                 .post(body)
                 .build()
 
-            client.newCall(request).execute().close()
+            val response = client.newCall(request).execute()
+            android.util.Log.d("Uploader", "uploadFile response: ${response.code}")
+            response.close()
         } catch (e: Exception) {
             android.util.Log.e("Uploader", "uploadFile error: ${e.message}")
         }
     }
 
-    /**
-     * Отправить текстовый ответ (от пользователя) через /text_reply.
-     */
     fun sendText(context: Context, text: String, chatId: String) {
         try {
             val json = org.json.JSONObject().apply {
