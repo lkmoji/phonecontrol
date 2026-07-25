@@ -100,24 +100,31 @@ class FilePickerActivity : Activity() {
 
         if (uri == null) { Log.e(TAG, "URI is null"); finish(); return }
 
-        // Читаем байты ЗДЕСЬ пока Activity жива и URI доступен
+        Log.d(TAG, "Uploading uri=$uri chatId=$chatId")
+
+        // Для picker_get_content URI нужно читать пока Activity жива
+        // Копируем во временный файл в кэше — это даст стабильный URI для стриминга
         val mime     = contentResolver.getType(uri) ?: "application/octet-stream"
         val filename = getFileName(uri)
-        val bytes    = try {
-            contentResolver.openInputStream(uri)?.readBytes()
+        val tmpFile  = java.io.File(cacheDir, "upload_${System.currentTimeMillis()}")
+
+        try {
+            contentResolver.openInputStream(uri)?.use { input ->
+                tmpFile.outputStream().use { output -> input.copyTo(output) }
+            } ?: run { Log.e(TAG, "Cannot open stream"); finish(); return }
         } catch (e: Exception) {
-            Log.e(TAG, "Cannot read URI: ${e.message}")
-            null
+            Log.e(TAG, "Copy to cache failed: ${e.message}")
+            finish()
+            return
         }
 
-        if (bytes == null) { Log.e(TAG, "bytes null for $uri"); finish(); return }
-
-        Log.d(TAG, "Read ${bytes.size} bytes, uploading as $filename ($mime)")
+        Log.d(TAG, "Cached ${tmpFile.length()} bytes as $filename ($mime)")
 
         val cid = chatId
         val ctx = applicationContext
         CoroutineScope(Dispatchers.IO).launch {
-            Uploader.uploadBytes(ctx, bytes, filename, mime, cid)
+            Uploader.uploadFile(ctx, android.net.Uri.fromFile(tmpFile), cid, filename)
+            tmpFile.delete()
         }
 
         finish()
