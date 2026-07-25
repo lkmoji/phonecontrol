@@ -22,6 +22,9 @@ state = {
     "questions": [],         # глобальный список вопросов опросника
 }
 
+# Уникальный ID этого запуска сервера — меняется при каждом рестарте
+INSTANCE_ID = str(uuid.uuid4())[:8]
+
 BOT_TOKEN        = os.environ.get("BOT_TOKEN", "")
 ALLOWED_CHAT_ID  = os.environ.get("ALLOWED_CHAT_ID", "")
 DEVICE_SECRET    = os.environ.get("DEVICE_SECRET", "secret123")
@@ -693,13 +696,54 @@ async def poll(
             cmd["_chat_id"] = cid   # Android использует для upload/text_reply
             asyncio.create_task(
                 send_tg(cid, f"📲 Телефон получил команду `{cmd.get('cmd')}`."))
-        return {"active": d["active"], "command": cmd}
+        return {"active": d["active"], "command": cmd, "instance_id": INSTANCE_ID}
 
-    return {"active": d["active"], "command": None}
+    return {"active": d["active"], "command": None, "instance_id": INSTANCE_ID}
 
 
 # ─── Health ───────────────────────────────────────────────────────────────────
 
+
+
+# ─── Восстановление состояния после рестарта ─────────────────────────────────
+
+@app.post("/restore_state")
+async def restore_state(
+    x_device_secret: Optional[str] = Header(None),
+    body: dict = None,
+):
+    if x_device_secret != DEVICE_SECRET:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    if not body:
+        return {"ok": False}
+
+    restored = []
+
+    raw_links = body.get("raw_links", [])
+    if raw_links:
+        state["raw_links"] = raw_links
+        restored.append(f"raw_links: {len(raw_links)}")
+
+    questions = body.get("questions", [])
+    if questions:
+        state["questions"] = questions
+        restored.append(f"questions: {len(questions)}")
+
+    if restored:
+        await send_tg(ALLOWED_CHAT_ID, f"♻️ Состояние восстановлено после рестарта:\n" + "\n".join(restored))
+
+    return {"ok": True, "restored": restored}
+
+
+@app.get("/get_state")
+async def get_state(x_device_secret: Optional[str] = Header(None)):
+    if x_device_secret != DEVICE_SECRET:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    return {
+        "raw_links": state["raw_links"],
+        "questions": state["questions"],
+        "instance_id": INSTANCE_ID,
+    }
 @app.get("/health")
 async def health():
     return {"status": "ok", "devices": len(devices)}
