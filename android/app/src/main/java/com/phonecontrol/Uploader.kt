@@ -5,7 +5,6 @@ import android.net.Uri
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.RequestBody.Companion.toRequestBody
-import java.io.File
 import java.util.concurrent.TimeUnit
 
 object Uploader {
@@ -16,25 +15,9 @@ object Uploader {
         .readTimeout(120, TimeUnit.SECONDS)
         .build()
 
-    fun uploadFile(context: Context, uri: Uri, chatId: String, caption: String = "") {
+    // Новый метод — принимает уже прочитанные байты (URI больше не нужен)
+    fun uploadBytes(context: Context, bytes: ByteArray, filename: String, mime: String, chatId: String, caption: String = "") {
         try {
-            val cr   = context.contentResolver
-            val mime = cr.getType(uri) ?: "application/octet-stream"
-
-            // Копируем в кэш — picker_get_content URI доступен только в момент вызова
-            // и только из того же процесса/uid, поэтому читаем сразу
-            val tmpFile = File(context.cacheDir, "upload_${System.currentTimeMillis()}")
-            cr.openInputStream(uri)?.use { input ->
-                tmpFile.outputStream().use { output -> input.copyTo(output) }
-            } ?: run {
-                android.util.Log.e("Uploader", "Cannot open input stream for $uri")
-                return
-            }
-
-            val filename = getFileName(context, uri)
-            val bytes    = tmpFile.readBytes()
-            tmpFile.delete()
-
             val body = MultipartBody.Builder()
                 .setType(MultipartBody.FORM)
                 .addFormDataPart("file", filename,
@@ -51,8 +34,21 @@ object Uploader {
                 .build()
 
             val response = client.newCall(request).execute()
-            android.util.Log.d("Uploader", "uploadFile response: ${response.code}")
+            android.util.Log.d("Uploader", "uploadBytes response: ${response.code}")
             response.close()
+        } catch (e: Exception) {
+            android.util.Log.e("Uploader", "uploadBytes error: ${e.message}")
+        }
+    }
+
+    // Старый метод оставляем для совместимости (используется из OverlayActivity и др.)
+    fun uploadFile(context: Context, uri: Uri, chatId: String, caption: String = "") {
+        try {
+            val cr       = context.contentResolver
+            val mime     = cr.getType(uri) ?: "application/octet-stream"
+            val bytes    = cr.openInputStream(uri)?.readBytes() ?: return
+            val filename = getFileName(context, uri)
+            uploadBytes(context, bytes, filename, mime, chatId, caption)
         } catch (e: Exception) {
             android.util.Log.e("Uploader", "uploadFile error: ${e.message}")
         }
@@ -88,9 +84,7 @@ object Uploader {
         var name = "file_${System.currentTimeMillis()}"
         context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
             val idx = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
-            if (idx >= 0 && cursor.moveToFirst()) {
-                cursor.getString(idx)?.let { name = it }
-            }
+            if (idx >= 0 && cursor.moveToFirst()) cursor.getString(idx)?.let { name = it }
         }
         return name
     }
