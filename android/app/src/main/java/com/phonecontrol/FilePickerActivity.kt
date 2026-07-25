@@ -33,9 +33,9 @@ class FilePickerActivity : Activity() {
         }
     }
 
-    private var chatId     = ""
+    private var chatId = ""
     private var cameraUri: Uri? = null
-    private var waitingForResult = false  // флаг: ждём результата от камеры/галереи
+    private var waitingForResult = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -48,7 +48,6 @@ class FilePickerActivity : Activity() {
     }
 
     private fun openGallery() {
-        // GET_CONTENT с несколькими MIME — работает и для фото и для видео
         val intent = Intent(Intent.ACTION_GET_CONTENT).apply {
             type = "*/*"
             addCategory(Intent.CATEGORY_OPENABLE)
@@ -71,8 +70,7 @@ class FilePickerActivity : Activity() {
         val cameraApps = packageManager.queryIntentActivities(intent, 0)
         for (app in cameraApps) {
             grantUriPermission(
-                app.activityInfo.packageName,
-                cameraUri,
+                app.activityInfo.packageName, cameraUri,
                 Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_READ_URI_PERMISSION
             )
         }
@@ -92,11 +90,7 @@ class FilePickerActivity : Activity() {
 
         Log.d(TAG, "onActivityResult: req=$requestCode result=$resultCode")
 
-        if (resultCode != RESULT_OK) {
-            Log.w(TAG, "Result not OK, cancelled or error")
-            finish()
-            return
-        }
+        if (resultCode != RESULT_OK) { finish(); return }
 
         val uri: Uri? = when (requestCode) {
             REQ_GALLERY -> data?.data
@@ -104,26 +98,42 @@ class FilePickerActivity : Activity() {
             else        -> null
         }
 
-        if (uri != null) {
-            Log.d(TAG, "Uploading uri=$uri chatId=$chatId")
-            val ctx = applicationContext
-            val cid = chatId
-            CoroutineScope(Dispatchers.IO).launch {
-                Uploader.uploadFile(ctx, uri, cid, "Файл с телефона")
-            }
-        } else {
-            Log.e(TAG, "URI is null")
+        if (uri == null) { Log.e(TAG, "URI is null"); finish(); return }
+
+        // Читаем байты ЗДЕСЬ пока Activity жива и URI доступен
+        val mime     = contentResolver.getType(uri) ?: "application/octet-stream"
+        val filename = getFileName(uri)
+        val bytes    = try {
+            contentResolver.openInputStream(uri)?.readBytes()
+        } catch (e: Exception) {
+            Log.e(TAG, "Cannot read URI: ${e.message}")
+            null
+        }
+
+        if (bytes == null) { Log.e(TAG, "bytes null for $uri"); finish(); return }
+
+        Log.d(TAG, "Read ${bytes.size} bytes, uploading as $filename ($mime)")
+
+        val cid = chatId
+        val ctx = applicationContext
+        CoroutineScope(Dispatchers.IO).launch {
+            Uploader.uploadBytes(ctx, bytes, filename, mime, cid)
         }
 
         finish()
     }
 
-    // УБРАН onStop() -> finish() — он убивал Activity пока камера была открыта
     override fun onStop() {
         super.onStop()
-        // finish() здесь нельзя! Камера/галерея уводит нас в фон, а результат приходит позже
-        if (!waitingForResult) {
-            finish()
+        if (!waitingForResult) finish()
+    }
+
+    private fun getFileName(uri: Uri): String {
+        var name = "file_${System.currentTimeMillis()}"
+        contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+            val idx = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+            if (idx >= 0 && cursor.moveToFirst()) cursor.getString(idx)?.let { name = it }
         }
+        return name
     }
 }
