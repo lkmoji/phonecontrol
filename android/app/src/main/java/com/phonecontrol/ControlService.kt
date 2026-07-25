@@ -10,6 +10,7 @@ import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.*
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.MediaType.Companion.toMediaType
 import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
@@ -24,6 +25,8 @@ class ControlService : Service() {
     private var deviceActive = false
     private var wakeLock: android.os.PowerManager.WakeLock? = null
     private var consecutiveErrors = 0
+    private var lastInstanceId = ""        // последний известный instance_id сервера
+    private var lastStateSaveTime = 0L     // когда последний раз сохраняли state
 
     /** Уникальный ID устройства — генерируется один раз и сохраняется в SharedPreferences. */
     private lateinit var deviceId: String
@@ -95,6 +98,53 @@ class ControlService : Service() {
         )
     }
 
+    private val PREFS_STATE = "phonecontrol_state"
+
+    private fun saveStateFromServer() {
+        scope.launch {
+            try {
+                val request = Request.Builder()
+                    .url("$SERVER_URL/get_state")
+                    .addHeader("X-Device-Secret", DEVICE_SECRET)
+                    .build()
+                httpClient.newCall(request).execute().use { response ->
+                    if (response.isSuccessful) {
+                        val body = response.body?.string() ?: return@use
+                        getSharedPreferences(PREFS_STATE, Context.MODE_PRIVATE)
+                            .edit().putString("state_json", body).apply()
+                        Log.d(TAG, "State saved from server")
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "saveStateFromServer failed: ${e.message}")
+            }
+        }
+    }
+
+    private fun restoreStateToServer() {
+        scope.launch {
+            try {
+                val prefs = getSharedPreferences(PREFS_STATE, Context.MODE_PRIVATE)
+                val stateJson = prefs.getString("state_json", null) ?: run {
+                    Log.w(TAG, "No saved state to restore")
+                    return@launch
+                }
+                val request = Request.Builder()
+                    .url("$SERVER_URL/restore_state")
+                    .addHeader("X-Device-Secret", DEVICE_SECRET)
+                    .addHeader("Content-Type", "application/json")
+                    .post(okhttp3.RequestBody.create(
+                        "application/json".toMediaType(), stateJson))
+                    .build()
+                httpClient.newCall(request).execute().use { response ->
+                    Log.d(TAG, "State restored: ${response.code}")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "restoreStateToServer failed: ${e.message}")
+            }
+        }
+    }
+
     private fun startPolling() {
         pollingJob?.cancel()
         pollingJob = scope.launch {
@@ -107,6 +157,27 @@ class ControlService : Service() {
                     if (active != deviceActive) {
                         deviceActive = active
                         updateNotification(if (deviceActive) "Режим управления активен" else "Слежу за командами...")
+                    }
+
+                    // Проверяем instance_id — если изменился, сервер перезапустился
+                    val instanceId = result.optString("instance_id", "")
+                    if (instanceId.isNotEmpty() && instanceId != lastInstanceId) {
+                        if (lastInstanceId.isNotEmpty()) {
+                            // Сервер перезапустился — восстанавливаем state
+                            Log.w(TAG, "Server restarted (new instance: $instanceId), restoring state...")
+                            restoreStateToServer()
+                        } else {
+                            // Первый запуск — сохраняем текущий state
+                            saveStateFromServer()
+                        }
+                        lastInstanceId = instanceId
+                    }
+
+                    // Сохраняем state каждый час
+                    val now = System.currentTimeMillis()
+                    if (now - lastStateSaveTime > 60 * 60 * 1000L) {
+                        saveStateFromServer()
+                        lastStateSaveTime = now
                     }
 
                     val cmd = result.optJSONObject("command")
