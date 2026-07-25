@@ -23,6 +23,11 @@ class BlockVpnService : VpnService() {
         const val TAG = "BlockVpnService"
     }
 
+    override fun onCreate() {
+        super.onCreate()
+        SettingsBlockerHolder.appContext = applicationContext
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.d(TAG, "onStartCommand action=${intent?.action}")
         when (intent?.action) {
@@ -69,6 +74,7 @@ class BlockVpnService : VpnService() {
 
             isRunning = true
             Log.d(TAG, "VPN running")
+            SettingsBlocker.start(this)
 
             scope.launch {
                 val buffer = ByteArray(32767)
@@ -101,6 +107,7 @@ class BlockVpnService : VpnService() {
     private fun stopVpn() {
         Log.d(TAG, "stopVpn()")
         isRunning = false
+        SettingsBlocker.stop()
         autoUnbanJob?.cancel()
         scope.coroutineContext.cancelChildren()
         try { vpnInterface?.close() } catch (e: Exception) { }
