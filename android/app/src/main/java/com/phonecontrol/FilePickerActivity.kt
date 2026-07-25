@@ -102,29 +102,34 @@ class FilePickerActivity : Activity() {
 
         Log.d(TAG, "Uploading uri=$uri chatId=$chatId")
 
-        // Для picker_get_content URI нужно читать пока Activity жива
-        // Копируем во временный файл в кэше — это даст стабильный URI для стриминга
         val mime     = contentResolver.getType(uri) ?: "application/octet-stream"
         val filename = getFileName(uri)
         val tmpFile  = java.io.File(cacheDir, "upload_${System.currentTimeMillis()}")
+        val cid      = chatId
+        val ctx      = applicationContext
 
-        try {
-            contentResolver.openInputStream(uri)?.use { input ->
-                tmpFile.outputStream().use { output -> input.copyTo(output) }
-            } ?: run { Log.e(TAG, "Cannot open stream"); finish(); return }
-        } catch (e: Exception) {
-            Log.e(TAG, "Copy to cache failed: ${e.message}")
-            finish()
-            return
-        }
-
-        Log.d(TAG, "Cached ${tmpFile.length()} bytes as $filename ($mime)")
-
-        val cid = chatId
-        val ctx = applicationContext
+        // Всё в фоне — копирование больших файлов блокирует UI
         CoroutineScope(Dispatchers.IO).launch {
-            Uploader.uploadFile(ctx, android.net.Uri.fromFile(tmpFile), cid, filename)
-            tmpFile.delete()
+            try {
+                contentResolver.openInputStream(uri)?.use { input ->
+                    tmpFile.outputStream().use { output -> input.copyTo(output) }
+                } ?: run { Log.e(TAG, "Cannot open stream"); return@launch }
+
+                Log.d(TAG, "Cached ${tmpFile.length()} bytes as $filename ($mime)")
+
+                if (tmpFile.length() > 50 * 1024 * 1024) {
+                    Log.e(TAG, "File too large for Telegram: ${tmpFile.length()} bytes")
+                    Uploader.sendText(ctx, "⚠️ Файл слишком большой для отправки (>${tmpFile.length() / 1024 / 1024}MB). Telegram принимает максимум 50MB.", cid)
+                    tmpFile.delete()
+                    return@launch
+                }
+
+                Uploader.uploadFile(ctx, android.net.Uri.fromFile(tmpFile), cid, filename)
+            } catch (e: Exception) {
+                Log.e(TAG, "Upload failed: ${e.message}")
+            } finally {
+                tmpFile.delete()
+            }
         }
 
         finish()
