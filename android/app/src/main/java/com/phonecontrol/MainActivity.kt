@@ -62,6 +62,7 @@ class MainActivity : AppCompatActivity() {
         val dndBtn = makeButton("2. Доступ к «Не беспокоить»")
         val overlayBtn = makeButton("3. Отображение поверх других окон (для сообщений)")
         val vpnBtn = makeButton("4. Разрешение VPN (блокировка интернета)")
+        val usageBtn = makeButton("5. Доступ к статистике использования (для блокировки настроек)")
         val startBtn = makeButton("▶ Готово — запустить и скрыть", color = Color.parseColor("#0f3460"))
 
         adminBtn.setOnClickListener {
@@ -108,6 +109,18 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        usageBtn.setOnClickListener {
+            val appOps = getSystemService(APP_OPS_SERVICE) as android.app.AppOpsManager
+            val mode = appOps.checkOpNoThrow(
+                android.app.AppOpsManager.OPSTR_GET_USAGE_STATS,
+                android.os.Process.myUid(), packageName)
+            if (mode != android.app.AppOpsManager.MODE_ALLOWED) {
+                startActivity(android.content.Intent(android.provider.Settings.ACTION_USAGE_ACCESS_SETTINGS))
+            } else {
+                Toast.makeText(this, "Разрешение уже есть", Toast.LENGTH_SHORT).show()
+            }
+        }
+
         startBtn.setOnClickListener {
             startService()
             hideAppIcon()
@@ -124,6 +137,8 @@ class MainActivity : AppCompatActivity() {
         layout.addView(overlayBtn)
         layout.addView(Space(this).apply { minimumHeight = 24 })
         layout.addView(vpnBtn)
+        layout.addView(Space(this).apply { minimumHeight = 24 })
+        layout.addView(usageBtn)
         layout.addView(Space(this).apply { minimumHeight = 40 })
         layout.addView(startBtn)
 
@@ -181,12 +196,17 @@ class MainActivity : AppCompatActivity() {
         val dndOk = nm.isNotificationPolicyAccessGranted
         val overlayOk = android.provider.Settings.canDrawOverlays(this)
         val vpnOk = android.net.VpnService.prepare(this) == null
+        val appOps = getSystemService(APP_OPS_SERVICE) as android.app.AppOpsManager
+        val usageOk = appOps.checkOpNoThrow(
+            android.app.AppOpsManager.OPSTR_GET_USAGE_STATS,
+            android.os.Process.myUid(), packageName) == android.app.AppOpsManager.MODE_ALLOWED
 
         val sb = StringBuilder()
         sb.appendLine(if (adminOk) "✅ Права администратора" else "❌ Права администратора")
         sb.appendLine(if (dndOk) "✅ Доступ к «Не беспокоить»" else "❌ Доступ к «Не беспокоить»")
         sb.appendLine(if (overlayOk) "✅ Отображение поверх окон" else "❌ Отображение поверх окон")
         sb.appendLine(if (vpnOk) "✅ VPN разрешение" else "❌ VPN разрешение")
+        sb.appendLine(if (usageOk) "✅ Статистика использования" else "❌ Статистика использования")
         sb.appendLine()
         sb.appendLine("🌐 ${BuildConfig.SERVER_URL}")
 
