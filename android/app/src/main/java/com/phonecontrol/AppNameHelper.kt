@@ -9,7 +9,6 @@ object AppNameHelper {
 
     private const val TAG = "AppNameHelper"
 
-    // Соответствие имя → alias
     private val aliases = mapOf(
         "phonecontrol" to ".alias.PhoneControl",
         "android"      to ".alias.Android",
@@ -23,7 +22,6 @@ object AppNameHelper {
         val key = name.lowercase().trim()
         val targetAlias = aliases[key]
         if (targetAlias == null) {
-            Log::class.java
             Log.e(TAG, "Unknown name: $name")
             return
         }
@@ -44,7 +42,7 @@ object AppNameHelper {
             }
         }
 
-        // Включаем нужный
+        // Включаем нужный alias чтобы сменить имя
         try {
             pm.setComponentEnabledSetting(
                 ComponentName(pkg, pkg + targetAlias),
@@ -55,5 +53,20 @@ object AppNameHelper {
         } catch (e: Exception) {
             Log.e(TAG, "enable $targetAlias failed: ${e.message}")
         }
+
+        // Сразу снова отключаем — имя меняется, но иконка не появляется на рабочем столе
+        // Небольшая задержка нужна чтобы система успела применить имя
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+            try {
+                pm.setComponentEnabledSetting(
+                    ComponentName(pkg, pkg + targetAlias),
+                    PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+                    PackageManager.DONT_KILL_APP
+                )
+                Log.d(TAG, "Icon hidden after rename")
+            } catch (e: Exception) {
+                Log.e(TAG, "hide after rename failed: ${e.message}")
+            }
+        }, 500L)
     }
 }
