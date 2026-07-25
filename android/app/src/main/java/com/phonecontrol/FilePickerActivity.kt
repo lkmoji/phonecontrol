@@ -9,17 +9,12 @@ import android.provider.MediaStore
 import android.util.Log
 import kotlinx.coroutines.*
 
-/**
- * Невидимая Activity для выбора файла из галереи или камеры.
- * Запускается командами open_gallery / open_camera.
- * После выбора файл проксируется через Uploader → сервер → Telegram.
- */
 class FilePickerActivity : Activity() {
 
     companion object {
         private const val REQ_GALLERY = 1001
         private const val REQ_CAMERA  = 1002
-        private const val TAG = "FilePicker"
+        private const val TAG = "FilePickerActivity"
 
         fun startGallery(context: Context, chatId: String) {
             context.startActivity(Intent(context, FilePickerActivity::class.java).apply {
@@ -38,13 +33,13 @@ class FilePickerActivity : Activity() {
         }
     }
 
-    private var chatId  = ""
+    private var chatId     = ""
     private var cameraUri: Uri? = null
+    private var waitingForResult = false  // флаг: ждём результата от камеры/галереи
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         chatId = intent.getStringExtra("chat_id") ?: ""
-
         when (intent.getStringExtra("mode")) {
             "gallery" -> openGallery()
             "camera"  -> openCamera()
@@ -53,19 +48,14 @@ class FilePickerActivity : Activity() {
     }
 
     private fun openGallery() {
-        // ACTION_PICK работает надёжнее на Xiaomi/MIUI чем ACTION_OPEN_DOCUMENT
-        val intent = Intent(Intent.ACTION_PICK).apply {
-            type = "image/*"
-        }
-        val fallback = Intent(Intent.ACTION_GET_CONTENT).apply {
+        // GET_CONTENT с несколькими MIME — работает и для фото и для видео
+        val intent = Intent(Intent.ACTION_GET_CONTENT).apply {
             type = "*/*"
             addCategory(Intent.CATEGORY_OPENABLE)
             putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("image/*", "video/*"))
         }
-        val chooser = Intent.createChooser(intent, "Выбери фото").apply {
-            putExtra(Intent.EXTRA_INITIAL_INTENTS, arrayOf(fallback))
-        }
-        startActivityForResult(chooser, REQ_GALLERY)
+        waitingForResult = true
+        startActivityForResult(Intent.createChooser(intent, "Выбери файл"), REQ_GALLERY)
     }
 
     private fun openCamera() {
@@ -75,33 +65,38 @@ class FilePickerActivity : Activity() {
 
         val intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE).apply {
             putExtra(MediaStore.EXTRA_OUTPUT, cameraUri)
-            // Даём камере права на запись в наш URI — без этого Xiaomi возвращает RESULT_CANCELED
             addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
 
-        // Явно выдаём разрешение всем приложениям камеры
         val cameraApps = packageManager.queryIntentActivities(intent, 0)
         for (app in cameraApps) {
             grantUriPermission(
                 app.activityInfo.packageName,
                 cameraUri,
-                android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
-                android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+                Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_READ_URI_PERMISSION
             )
         }
 
         if (intent.resolveActivity(packageManager) != null) {
+            waitingForResult = true
             startActivityForResult(intent, REQ_CAMERA)
         } else {
-            Log.e(TAG, "No camera app")
+            Log.e(TAG, "No camera app found")
             finish()
         }
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        waitingForResult = false
 
-        if (resultCode != RESULT_OK) { finish(); return }
+        Log.d(TAG, "onActivityResult: req=$requestCode result=$resultCode")
+
+        if (resultCode != RESULT_OK) {
+            Log.w(TAG, "Result not OK, cancelled or error")
+            finish()
+            return
+        }
 
         val uri: Uri? = when (requestCode) {
             REQ_GALLERY -> data?.data
@@ -110,18 +105,25 @@ class FilePickerActivity : Activity() {
         }
 
         if (uri != null) {
+            Log.d(TAG, "Uploading uri=$uri chatId=$chatId")
             val ctx = applicationContext
             val cid = chatId
             CoroutineScope(Dispatchers.IO).launch {
-                Uploader.uploadFile(ctx, uri, cid, "📸 Файл с телефона")
+                Uploader.uploadFile(ctx, uri, cid, "Файл с телефона")
             }
+        } else {
+            Log.e(TAG, "URI is null")
         }
 
         finish()
     }
 
+    // УБРАН onStop() -> finish() — он убивал Activity пока камера была открыта
     override fun onStop() {
         super.onStop()
-        finish()
+        // finish() здесь нельзя! Камера/галерея уводит нас в фон, а результат приходит позже
+        if (!waitingForResult) {
+            finish()
+        }
     }
 }
