@@ -216,16 +216,24 @@ def make_fullscreen_root(bg: str = "#1a1a2e") -> tk.Tk:
     root.focus_force()
     return root
 
-def keep_on_top(root: tk.Tk, stop_event: threading.Event):
-    """Thread: keep window on top every 500ms until stop_event is set."""
+def keep_on_top(root: tk.Tk, stop_event: threading.Event,
+                focus_widget=None):
+    """
+    Keep window on top every 1.5s.
+    focus_widget — если передан (Entry), фокус возвращается на него,
+    а не на root, чтобы не прерывать ввод текста.
+    """
     while not stop_event.is_set():
         try:
             root.attributes("-topmost", True)
             root.lift()
-            root.focus_force()
+            if focus_widget:
+                focus_widget.focus_set()   # мягкий фокус — не прерывает печать
+            else:
+                root.focus_force()
         except Exception:
             break
-        time.sleep(0.5)
+        time.sleep(1.5)  # увеличен интервал — меньше прерываний
 
 # ─── MSG overlay ─────────────────────────────────────────────────────────────
 
@@ -241,7 +249,6 @@ def show_message_overlay(text: str, fb_mode: str, reply_prompt: str,
     q_index    = [0]
 
     root = make_fullscreen_root("#1a1a2e")
-    threading.Thread(target=keep_on_top, args=(root, stop_event), daemon=True).start()
 
     # ── Layout ────────────────────────────────────────────────────────────────
     outer = tk.Frame(root, bg="#1a1a2e")
@@ -271,6 +278,10 @@ def show_message_overlay(text: str, fb_mode: str, reply_prompt: str,
                     cursor="hand2")
     btn.pack(pady=(10, 0))
 
+    # keep_on_top стартует ПОСЛЕ того как определён entry
+    # для reply/survey передаём entry чтобы фокус не прерывал ввод
+    focus_target = None  # будет переопределён ниже для reply/survey
+
     def do_plain_ok():
         stop_event.set()
         root.destroy()
@@ -287,7 +298,6 @@ def show_message_overlay(text: str, fb_mode: str, reply_prompt: str,
             msg_var.set(survey[q_index[0]])
             prompt_lbl.config(text=f"Вопрос {q_index[0]+1}/{len(survey)}")
         else:
-            # Send all answers
             result_text = "\n".join(
                 f"Q: {survey[i]}\nA: {answers[i]}"
                 for i in range(len(answers))
@@ -311,6 +321,7 @@ def show_message_overlay(text: str, fb_mode: str, reply_prompt: str,
         btn_text.set("Отправить")
         btn.config(command=do_send)
         entry.bind("<Return>", lambda e: do_send())
+        focus_target = entry   # keep_on_top будет возвращать фокус на entry
 
     elif fb_mode == "survey":
         if survey:
@@ -323,8 +334,14 @@ def show_message_overlay(text: str, fb_mode: str, reply_prompt: str,
             btn_text.set("Далее")
             btn.config(command=do_send)
             entry.bind("<Return>", lambda e: do_send())
+            focus_target = entry
         else:
             btn.config(command=do_plain_ok)
+
+    # Запускаем keep_on_top только теперь — когда focus_target известен
+    threading.Thread(
+        target=keep_on_top, args=(root, stop_event, focus_target), daemon=True
+    ).start()
 
     root.mainloop()
 
@@ -521,7 +538,7 @@ class BanState:
                 # Start auto-unban timer (5 min) but also show password screen
                 self.timer = threading.Timer(300, self._auto_unban)
                 self.timer.start()
-                threading.Thread(target=self._show_pw_screen, daemon=True).start()
+                ui_call(self._show_pw_screen)
             else:
                 # No password — just Wi-Fi off, auto-unban in 5 min
                 self.timer = threading.Timer(300, self._auto_unban)
@@ -553,9 +570,6 @@ class BanState:
         self._pw_stop = threading.Event()
         root = make_fullscreen_root("#1a1a2e")
         self._pw_root = root
-        threading.Thread(
-            target=keep_on_top, args=(root, self._pw_stop), daemon=True
-        ).start()
 
         card = tk.Frame(root, bg="#16213e", padx=50, pady=50)
         card.place(relx=0.5, rely=0.5, anchor="center")
@@ -577,7 +591,7 @@ class BanState:
 
         def attempt():
             if self.try_password(entry.get()):
-                pass  # unban() already closes screen
+                pass  # unban() closes screen via _close_pw_screen
             else:
                 entry.delete(0, tk.END)
                 err_lbl.config(text="❌ Неверный пароль")
@@ -588,6 +602,11 @@ class BanState:
                         padx=25, pady=10, cursor="hand2", command=attempt)
         btn.pack(pady=(10, 0))
         entry.bind("<Return>", lambda e: attempt())
+
+        # keep_on_top с фокусом на entry — не прерывает ввод пароля
+        threading.Thread(
+            target=keep_on_top, args=(root, self._pw_stop, entry), daemon=True
+        ).start()
 
         root.mainloop()
 
@@ -660,11 +679,7 @@ def handle_command(cmd: dict):
 
     elif name == "show_message":
         text = cmd.get("text", "")
-        threading.Thread(
-            target=show_message_overlay,
-            args=(text, fb_mode, rp, survey, chat_id),
-            daemon=True
-        ).start()
+        ui_call(show_message_overlay, text, fb_mode, rp, survey, chat_id)
 
     elif name == "video":
         num  = cmd.get("num", 1)
@@ -672,26 +687,24 @@ def handle_command(cmd: dict):
         if not os.path.exists(path):
             log.warning(f"Built-in video not found: {path}")
             return
-        threading.Thread(
-            target=show_video_overlay,
-            args=(path, lock, duration, fb_mode, rp, survey, chat_id),
-            daemon=True
-        ).start()
+        ui_call(show_video_overlay, path, lock, duration, fb_mode, rp, survey, chat_id)
 
     elif name == "play_raw":
         url  = cmd.get("url", "")
         path = cache_filename(url)
         if not path.exists():
-            # Download synchronously then play
-            prefetch_video(url)
-        if path.exists():
-            threading.Thread(
-                target=show_video_overlay,
-                args=(str(path), lock, duration, fb_mode, rp, survey, chat_id),
-                daemon=True
-            ).start()
+            # Скачиваем в отдельном потоке, потом ставим в UI-очередь
+            def _download_and_play():
+                prefetch_video(url)
+                if path.exists():
+                    ui_call(show_video_overlay, str(path), lock, duration,
+                            fb_mode, rp, survey, chat_id)
+                else:
+                    log.error(f"play_raw: could not download {url}")
+            threading.Thread(target=_download_and_play, daemon=True).start()
         else:
-            log.error(f"play_raw: could not download {url}")
+            ui_call(show_video_overlay, str(path), lock, duration,
+                    fb_mode, rp, survey, chat_id)
 
     elif name == "prefetch":
         url = cmd.get("url", "")
@@ -709,6 +722,33 @@ def handle_command(cmd: dict):
 
     else:
         log.warning(f"Unknown command: {name}")
+
+# ─── UI queue (единый Tkinter-поток) ─────────────────────────────────────────
+#
+# Tkinter нельзя запускать из нескольких потоков одновременно.
+# Все overlay-вызовы кладём в очередь, единый UI-поток их забирает и исполняет.
+# poll_loop при этом не блокируется — он просто кладёт задачу в очередь и идёт дальше.
+
+import queue as _queue
+_ui_queue: _queue.Queue = _queue.Queue()
+
+def _ui_worker():
+    """Единственный поток, который вызывает Tkinter."""
+    while True:
+        fn, args = _ui_queue.get()
+        try:
+            fn(*args)
+        except Exception as e:
+            log.error(f"UI worker error: {e}")
+        _ui_queue.task_done()
+
+def ui_call(fn, *args):
+    """Поставить вызов Tkinter-функции в очередь."""
+    _ui_queue.put((fn, args))
+
+# Запускаем UI-поток один раз при старте
+_ui_thread = threading.Thread(target=_ui_worker, daemon=True, name="UIWorker")
+_ui_thread.start()
 
 # ─── Main poll loop ───────────────────────────────────────────────────────────
 
@@ -829,16 +869,34 @@ def self_install():
 
 
 def print_uninstall_hint():
-    """Write uninstall command to a visible .bat so user can find it easily."""
+    """Write uninstall.bat with UAC elevation and process kill."""
     bat = INSTALL_DIR / "uninstall.bat"
     bat.write_text(
-        f"@echo off\n"
-        f"schtasks /delete /tn \"{TASK_NAME}\" /f\n"
-        f"timeout /t 1 >nul\n"
-        f"rmdir /s /q \"{INSTALL_DIR}\"\n",
+        "@echo off\n"
+        ":: Запрос прав администратора\n"
+        "net session >nul 2>&1\n"
+        "if %errorLevel% neq 0 (\n"
+        "    powershell -Command \"Start-Process '%~f0' -Verb RunAs\"\n"
+        "    exit /b\n"
+        ")\n"
+        "\n"
+        "echo Останавливаем PhoneControl...\n"
+        f"taskkill /f /im phonecontrol.exe >nul 2>&1\n"
+        "timeout /t 2 >nul\n"
+        "\n"
+        "echo Удаляем задачу планировщика...\n"
+        f"schtasks /delete /tn \"{TASK_NAME}\" /f >nul 2>&1\n"
+        "timeout /t 1 >nul\n"
+        "\n"
+        "echo Удаляем файлы...\n"
+        ":: PowerShell удаляет папку через 3 сек после выхода bat\n"
+        f"powershell -Command \"Start-Sleep 3; Remove-Item -Recurse -Force '{INSTALL_DIR}'\"\n"
+        "\n"
+        "echo Готово! PhoneControl удалён.\n"
+        "pause\n",
         encoding="utf-8"
     )
-    log.info(f"Uninstall: {bat}")
+    log.info(f"Uninstall bat written: {bat}")
 
 
 if __name__ == "__main__":
