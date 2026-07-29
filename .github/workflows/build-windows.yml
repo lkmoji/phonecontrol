@@ -1,0 +1,38 @@
+name: Build Windows EXE
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install -r windows/requirements.txt
+
+      - name: Build EXE
+        working-directory: windows
+        env:
+          PC_SERVER_URL:    ${{ secrets.PC_SERVER_URL }}
+          PC_DEVICE_SECRET: ${{ secrets.PC_DEVICE_SECRET }}
+        run: |
+          pyinstaller client.spec
+
+      - name: Upload EXE artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: phonecontrol-windows
+          path: windows/dist/phonecontrol.exe
+          retention-days: 30
