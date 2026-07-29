@@ -24,8 +24,15 @@ object SettingsBlocker {
         "com.miui.permcenter",
         "com.oneplus.settings",
         "com.oppo.settings",
-        "com.coloros.settings",
         "com.samsung.android.settings",
+        "com.android.settings",
+        "com.transsion.ossettingsext",
+        "com.transsion.aisettings",
+        "com.transsion.settings",    // часто встречается в скриптах деблоата [citation:5]
+        "com.transsion.settings.intelligence",
+        "com.transsion.settings.app",
+        "com.transsion.settings.system",
+        "com.transsion.settings.security",
     )
 
     private val checkRunnable = object : Runnable {
