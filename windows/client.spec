@@ -14,7 +14,6 @@ a = Analysis(
         'pycaw.pycaw',
         'comtypes',
         'comtypes.client',
-        'vlc',
         'tkinter',
         'tkinter.filedialog',
         'email.mime.multipart',
