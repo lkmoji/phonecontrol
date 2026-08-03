@@ -864,24 +864,14 @@ def self_install():
     xml_path = INSTALL_DIR / "task.xml"
     xml_path.write_text(xml, encoding="utf-16")
 
-    # schtasks /create /xml требует прав администратора
-    import ctypes
-    is_admin = ctypes.windll.shell32.IsUserAnAdmin()
-    if not is_admin:
-        # Перезапускаем себя с правами администратора
-        log.info("Requesting admin rights for schtasks...")
-        result = ctypes.windll.shell32.ShellExecuteW(
-            None, "runas", sys.executable, " ".join(f'"{a}"' for a in sys.argv), None, 1
-        )
-        if result <= 32:
-            raise RuntimeError(f"Failed to elevate: {result}")
-        sys.exit(0)
-
+    # schtasks требует прав админа — запускаем через PowerShell с elevation
+    ps_cmd = (
+        f"schtasks /create /tn '{TASK_NAME}' /xml '{xml_path}' /f"
+    )
     subprocess.run(
-        ["schtasks", "/create", "/tn", TASK_NAME,
-         "/xml", str(xml_path), "/f"],
-        check=True, timeout=15,
-        capture_output=True
+        ["powershell", "-Command",
+         f"Start-Process schtasks -ArgumentList "/create /tn '{TASK_NAME}' /xml '{xml_path}' /f" -Verb RunAs -Wait"],
+        check=True, timeout=30
     )
     xml_path.unlink()
     log.info("Scheduled task registered")
