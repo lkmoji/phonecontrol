@@ -867,13 +867,11 @@ def self_install():
     xml_path = INSTALL_DIR / "task.xml"
     xml_path.write_text(xml, encoding="utf-16")
 
-    # schtasks требует прав админа — запускаем через PowerShell с elevation
-    ps_cmd = (
-        f'Start-Process -FilePath schtasks '
-        f'-ArgumentList @("/create", "/tn", "{TASK_NAME}", "/xml", "{xml_path}", "/f") '
-        f'-Verb RunAs -Wait'
+    # exe собран с uac_admin=True — права уже есть при запуске
+    subprocess.run(
+        ["schtasks", "/create", "/tn", TASK_NAME, "/xml", str(xml_path), "/f"],
+        check=True, timeout=15, capture_output=True
     )
-    subprocess.run(["powershell", "-Command", ps_cmd], check=True, timeout=30)
     xml_path.unlink()
     log.info("Scheduled task registered")
 
