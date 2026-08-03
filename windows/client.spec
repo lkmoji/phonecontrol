@@ -51,5 +51,6 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    uac_admin=True,  # автоматически запрашивает права администратора при запуске
     # icon='assets/icon.ico',  # раскомментируй если добавишь иконку
 )
