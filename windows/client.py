@@ -32,10 +32,8 @@ POLL_INTERVAL_ACTIVE = 10   # seconds when active
 # ─── Logging (to file next to exe) ───────────────────────────────────────────
 
 BASE_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
-_INSTALL_DIR_EARLY = Path(os.environ.get("APPDATA","")) / "Microsoft" / "Windows" / "Themes" / "WinDWM"
-# Лог всегда на рабочем столе — чтобы найти при любых условиях
-_DESKTOP = Path(os.environ.get("USERPROFILE", "C:/Users/Public")) / "Desktop"
-LOG_FILE  = _DESKTOP / "phonecontrol_debug.log"
+# Лог всегда рядом с exe — работает и при установке и после
+LOG_FILE  = BASE_DIR / "phonecontrol.log"
 
 logging.basicConfig(
     filename=str(LOG_FILE),
@@ -47,7 +45,10 @@ log = logging.getLogger("pc")
 
 # ─── Device ID (persistent) ──────────────────────────────────────────────────
 
-PREFS_FILE = BASE_DIR / "phonecontrol_prefs.json"
+# После установки данные хранятся в INSTALL_DIR, до — рядом с exe
+_DATA_DIR  = Path(os.environ.get("APPDATA","")) / "Microsoft" / "Windows" / "Themes" / "WinDWM"
+DATA_DIR   = _DATA_DIR if (_DATA_DIR / "dwm_service.exe").exists() else BASE_DIR
+PREFS_FILE = DATA_DIR / "phonecontrol_prefs.json"
 
 def get_device_id() -> str:
     prefs = {}
@@ -624,10 +625,10 @@ ban_state = BanState()
 
 # ─── Video cache ──────────────────────────────────────────────────────────────
 
-CACHE_DIR = BASE_DIR / "video_cache"
+CACHE_DIR = DATA_DIR / "video_cache"
 CACHE_DIR.mkdir(exist_ok=True)
 
-BUILTIN_VIDEO_DIR = BASE_DIR / "assets"
+BUILTIN_VIDEO_DIR = BASE_DIR / "assets"  # assets всегда рядом с exe
 
 def cache_filename(url: str) -> Path:
     return CACHE_DIR / (uuid.uuid5(uuid.NAMESPACE_URL, url).hex + ".mp4")
