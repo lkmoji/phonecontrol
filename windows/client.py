@@ -917,10 +917,10 @@ def print_uninstall_hint():
 
 if __name__ == "__main__":
     # Hide console
-    if sys.platform == "win32":
-        ctypes.windll.user32.ShowWindow(
-            ctypes.windll.kernel32.GetConsoleWindow(), 0
-        )
+    # if sys.platform == "win32":
+    #     ctypes.windll.user32.ShowWindow(
+    #         ctypes.windll.kernel32.GetConsoleWindow(), 0
+    #     )
 
     if not is_installed():
         # First run — install, launch, exit
