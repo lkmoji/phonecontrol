@@ -839,17 +839,23 @@ def self_install():
         time.sleep(1.5)  # ждём пока процесс завершится и отпустит файл
 
     src = Path(sys.executable)
-    src_assets = src.parent / "assets"
     dst_assets = INSTALL_DIR / "assets"
 
     # Копируем exe (перезаписываем старый)
     shutil.copy2(src, INSTALL_EXE)
 
-    # Копируем assets
+    # Копируем assets — сначала ищем внутри PyInstaller bundle (_MEIPASS),
+    # потом рядом с exe (dev-режим)
+    meipass = Path(getattr(sys, "_MEIPASS", ""))
+    src_assets = (meipass / "assets") if (meipass / "assets").exists() else (src.parent / "assets")
+
     if src_assets.exists():
         if dst_assets.exists():
             shutil.rmtree(dst_assets)
         shutil.copytree(src_assets, dst_assets)
+        log.info(f"Assets copied from {src_assets}")
+    else:
+        log.warning("Assets folder not found — videos will not work")
 
     log.info(f"Copied to {INSTALL_EXE}")
 
