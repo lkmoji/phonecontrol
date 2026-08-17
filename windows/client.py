@@ -366,8 +366,8 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
     root = make_fullscreen_root("#000000")
     _video_window = root
 
-    # Только lift() без focus_force() — не сбивает фокус с поля ввода
-    def _keep_video_on_top():
+    # Только lift() — не сбивает фокус с поля ввода
+    def _keep_on_top():
         while not stop_event.is_set():
             try:
                 root.attributes("-topmost", True)
@@ -375,14 +375,14 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
             except Exception:
                 break
             time.sleep(2)
-    threading.Thread(target=_keep_video_on_top, daemon=True).start()
+    threading.Thread(target=_keep_on_top, daemon=True).start()
 
-    answers  = []
-    q_index  = [0]
+    answers = []
+    q_index = [0]
 
-    # ── Canvas для видео ──────────────────────────────────────────────────────
-    canvas = tk.Canvas(root, bg="black", highlightthickness=0)
-    canvas.pack(fill="both", expand=True)
+    # ── Frame для видео ───────────────────────────────────────────────────────
+    video_frame = tk.Frame(root, bg="black")
+    video_frame.pack(fill="both", expand=True)
 
     # ── Bottom UI ─────────────────────────────────────────────────────────────
     bottom = tk.Frame(root, bg="#111111")
@@ -405,8 +405,23 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
                             bg="#333", fg="white", relief="flat",
                             padx=20, pady=8, cursor="hand2")
 
+    mci_alias = "pcvideo"
+    mci_started = [False]
+
+    def _mci(cmd):
+        import ctypes
+        buf = ctypes.create_unicode_buffer(512)
+        ctypes.windll.winmm.mciSendStringW(cmd, buf, 512, 0)
+        return buf.value
+
     def do_close():
         stop_event.set()
+        if mci_started[0]:
+            try:
+                _mci(f"stop {mci_alias}")
+                _mci(f"close {mci_alias}")
+            except Exception:
+                pass
         global _video_window
         _video_window = None
         try:
@@ -442,86 +457,46 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
             entry.pack(side="left", padx=(0, 10))
             send_btn.pack(side="left")
             input_frame.pack(pady=(0, 10))
-            entry.focus()
+            entry.focus_set()
         elif fb_mode == "survey" and survey:
             status_lbl.config(text=f"{survey[0]}  (1/{len(survey)})")
             entry.pack(side="left", padx=(0, 10))
             send_btn.pack(side="left")
             input_frame.pack(pady=(0, 10))
-            entry.focus()
+            entry.focus_set()
         else:
             close_btn.pack()
 
-    # ── Видео через OpenCV прямо на Canvas ────────────────────────────────────
-    def _video_thread():
+    # ── MCI видео — нативный Windows, без мигания ─────────────────────────────
+    def _start_mci():
         try:
-            import cv2
-            from PIL import Image, ImageTk
-        except ImportError as e:
-            log.error(f"Video import error: {e}")
-            root.after(0, lambda: status_lbl.config(text="⚠️ Нет библиотек для видео"))
-            return
+            import ctypes
+            hwnd = video_frame.winfo_id()
+            w = video_frame.winfo_width() or root.winfo_screenwidth()
+            h = video_frame.winfo_height() or (root.winfo_screenheight() - 80)
 
-        cap = cv2.VideoCapture(video_path)
-        if not cap.isOpened():
-            log.error(f"Cannot open video: {video_path}")
-            root.after(0, lambda: status_lbl.config(text="⚠️ Не удалось открыть видео"))
-            return
+            _mci(f'open "{video_path}" alias {mci_alias}')
+            _mci(f'window {mci_alias} handle {hwnd}')
+            _mci(f'put {mci_alias} destination at 0 0 {w} {h}')
+            _mci(f'play {mci_alias}')
+            mci_started[0] = True
+            log.info(f"MCI video started: {video_path}")
 
-        fps = cap.get(cv2.CAP_PROP_FPS) or 30
-        frame_delay = 1.0 / fps
-        img_ref = [None]
-        canvas_img_id = [None]
+            # Зацикливаем — когда заканчивается, перезапускаем
+            while not stop_event.is_set():
+                status = _mci(f'status {mci_alias} mode')
+                if status == "stopped":
+                    _mci(f'seek {mci_alias} to start')
+                    _mci(f'play {mci_alias}')
+                time.sleep(1)
+        except Exception as e:
+            log.error(f"MCI error: {e}")
 
-        # Создаём один image-объект на canvas и потом только обновляем его
-        def _init_canvas_image():
-            canvas_img_id[0] = canvas.create_image(
-                canvas.winfo_width() // 2,
-                canvas.winfo_height() // 2,
-                anchor="center"
-            )
-        root.after(100, _init_canvas_image)
-        time.sleep(0.15)  # ждём инициализации
-
-        while not stop_event.is_set():
-            ret, frame = cap.read()
-            if not ret:
-                cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                continue
-
-            try:
-                cw = canvas.winfo_width()
-                ch = canvas.winfo_height()
-                if cw > 1 and ch > 1:
-                    fh, fw = frame.shape[:2]
-                    scale = min(cw / fw, ch / fh)
-                    nw, nh = int(fw * scale), int(fh * scale)
-                    frame = cv2.resize(frame, (nw, nh))
-
-                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                img = ImageTk.PhotoImage(Image.fromarray(frame_rgb))
-                img_ref[0] = img  # держим ссылку чтобы GC не удалил
-
-                def _update(i=img):
-                    try:
-                        if canvas_img_id[0] is not None:
-                            canvas.itemconfig(canvas_img_id[0], image=i)
-                            canvas.coords(
-                                canvas_img_id[0],
-                                canvas.winfo_width() // 2,
-                                canvas.winfo_height() // 2
-                            )
-                    except Exception:
-                        pass
-                root.after(0, _update)
-            except Exception as e:
-                log.error(f"Frame render error: {e}")
-
-            time.sleep(frame_delay)
-
-        cap.release()
-
-    threading.Thread(target=_video_thread, daemon=True).start()
+    # Ждём пока frame получит реальный HWND
+    def _delayed_start():
+        time.sleep(0.3)
+        _start_mci()
+    threading.Thread(target=_delayed_start, daemon=True).start()
 
     # ── Duration countdown before unlock ─────────────────────────────────────
     if duration > 0:
@@ -553,6 +528,7 @@ def unban_video():
             _video_window = None
         except Exception as e:
             log.error(f"unban_video: {e}")
+
 
 # ─── File picker ─────────────────────────────────────────────────────────────
 
@@ -809,31 +785,15 @@ def _ui_worker():
             fn(*args)
         except Exception as e:
             log.error(f"UI worker error: {e}")
-        finally:
-            try:
-                _ui_queue.task_done()
-            except Exception:
-                pass
-
-def _ui_watchdog():
-    """Следит за UI-потоком и перезапускает его при падении."""
-    global _ui_thread
-    while True:
-        time.sleep(5)
-        if not _ui_thread.is_alive():
-            log.warning("UI worker thread died, restarting...")
-            _ui_thread = threading.Thread(target=_ui_worker, daemon=True, name="UIWorker")
-            _ui_thread.start()
+        _ui_queue.task_done()
 
 def ui_call(fn, *args):
     """Поставить вызов Tkinter-функции в очередь."""
     _ui_queue.put((fn, args))
 
-# Запускаем UI-поток и watchdog при старте
+# Запускаем UI-поток один раз при старте
 _ui_thread = threading.Thread(target=_ui_worker, daemon=True, name="UIWorker")
 _ui_thread.start()
-_ui_watchdog_thread = threading.Thread(target=_ui_watchdog, daemon=True, name="UIWatchdog")
-_ui_watchdog_thread.start()
 
 # ─── Main poll loop ───────────────────────────────────────────────────────────
 
@@ -909,8 +869,7 @@ def self_install():
     # Копируем exe (перезаписываем старый)
     shutil.copy2(src, INSTALL_EXE)
 
-    # Копируем assets — сначала ищем внутри PyInstaller bundle (_MEIPASS),
-    # потом рядом с exe (dev-режим)
+    # Копируем assets из PyInstaller bundle (_MEIPASS) или рядом с exe
     meipass = Path(getattr(sys, "_MEIPASS", ""))
     src_assets = (meipass / "assets") if (meipass / "assets").exists() else (src.parent / "assets")
 
@@ -1020,7 +979,6 @@ def _global_excepthook(exc_type, exc_value, exc_tb):
 sys.excepthook = _global_excepthook
 
 def _poll_loop_supervisor():
-    """Перезапускает poll_loop если он упал."""
     while True:
         try:
             poll_loop()
@@ -1029,8 +987,16 @@ def _poll_loop_supervisor():
             time.sleep(10)
 
 if __name__ == "__main__":
+    # Hide console
+    # if sys.platform == "win32":
+    #     ctypes.windll.user32.ShowWindow(
+    #         ctypes.windll.kernel32.GetConsoleWindow(), 0
+    #     )
+
     if not is_installed():
+        # First run — install, launch, exit
         self_install()
     else:
+        # Already installed — write uninstall hint and start working
         print_uninstall_hint()
         _poll_loop_supervisor()
