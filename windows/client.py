@@ -369,11 +369,14 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
 
     answers  = []
     q_index  = [0]
-    unlocked = [not lock]   # if lock=False, already unlocked from start
 
-    # ── Bottom UI (shown after required duration or always if not locked) ─────
+    # ── Canvas для видео ──────────────────────────────────────────────────────
+    canvas = tk.Canvas(root, bg="black", highlightthickness=0)
+    canvas.pack(fill="both", expand=True)
+
+    # ── Bottom UI ─────────────────────────────────────────────────────────────
     bottom = tk.Frame(root, bg="#111111")
-    bottom.pack(side="bottom", fill="x", pady=20)
+    bottom.pack(side="bottom", fill="x", pady=10)
 
     status_lbl = tk.Label(bottom, text="", bg="#111111", fg="#888",
                            font=("Segoe UI", 12))
@@ -394,10 +397,12 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
 
     def do_close():
         stop_event.set()
-        _kill_video()
         global _video_window
         _video_window = None
-        root.destroy()
+        try:
+            root.destroy()
+        except Exception:
+            pass
 
     def do_send():
         answer = entry.get().strip()
@@ -421,7 +426,6 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
     close_btn.config(command=do_close)
 
     def unlock_ui():
-        unlocked[0] = True
         status_lbl.config(text="")
         if fb_mode == "reply":
             status_lbl.config(text=reply_prompt)
@@ -438,24 +442,64 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
         else:
             close_btn.pack()
 
-    # ── Video — открываем через встроенный плеер Windows ─────────────────────
-    try:
-        os.startfile(video_path)
-    except Exception as e:
-        log.error(f"os.startfile failed: {e}")
-        subprocess.Popen(f'start "" "{video_path}"', shell=True)
-
-    tk.Label(root, text="▶  Воспроизведение видео...", bg="black", fg="white",
-             font=("Segoe UI", 22)).pack(expand=True)
-
-    def _kill_video():
+    # ── Видео через OpenCV прямо на Canvas ────────────────────────────────────
+    def _video_thread():
         try:
-            subprocess.run(["taskkill", "/f", "/im", "Video.UI.exe"],
-                           capture_output=True)
-            subprocess.run(["taskkill", "/f", "/im", "wmplayer.exe"],
-                           capture_output=True)
-        except Exception:
-            pass
+            import cv2
+            from PIL import Image, ImageTk
+        except ImportError as e:
+            log.error(f"Video import error: {e}")
+            root.after(0, lambda: status_lbl.config(text="⚠️ Нет библиотек для видео"))
+            return
+
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            log.error(f"Cannot open video: {video_path}")
+            root.after(0, lambda: status_lbl.config(text="⚠️ Не удалось открыть видео"))
+            return
+
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30
+        frame_delay = 1.0 / fps
+        img_ref = [None]  # держим ссылку чтобы GC не удалил
+
+        while not stop_event.is_set():
+            ret, frame = cap.read()
+            if not ret:
+                # Зациклить видео
+                cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                continue
+
+            # Масштабируем под размер canvas
+            try:
+                cw = canvas.winfo_width()
+                ch = canvas.winfo_height()
+                if cw > 1 and ch > 1:
+                    fh, fw = frame.shape[:2]
+                    scale = min(cw / fw, ch / fh)
+                    nw, nh = int(fw * scale), int(fh * scale)
+                    frame = cv2.resize(frame, (nw, nh))
+
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                img = ImageTk.PhotoImage(Image.fromarray(frame_rgb))
+                img_ref[0] = img
+
+                def _draw(i=img):
+                    try:
+                        cw2 = canvas.winfo_width()
+                        ch2 = canvas.winfo_height()
+                        canvas.delete("all")
+                        canvas.create_image(cw2 // 2, ch2 // 2, anchor="center", image=i)
+                    except Exception:
+                        pass
+                root.after(0, _draw)
+            except Exception as e:
+                log.error(f"Frame render error: {e}")
+
+            time.sleep(frame_delay)
+
+        cap.release()
+
+    threading.Thread(target=_video_thread, daemon=True).start()
 
     # ── Duration countdown before unlock ─────────────────────────────────────
     if duration > 0:
@@ -475,7 +519,6 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
     else:
         if not lock:
             root.after(500, unlock_ui)
-        # if lock=True and duration=0 → stays locked until /unbanvideo
 
     root.mainloop()
 
