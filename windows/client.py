@@ -365,7 +365,17 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
 
     root = make_fullscreen_root("#000000")
     _video_window = root
-    threading.Thread(target=keep_on_top, args=(root, stop_event), daemon=True).start()
+
+    # Только lift() без focus_force() — не сбивает фокус с поля ввода
+    def _keep_video_on_top():
+        while not stop_event.is_set():
+            try:
+                root.attributes("-topmost", True)
+                root.lift()
+            except Exception:
+                break
+            time.sleep(2)
+    threading.Thread(target=_keep_video_on_top, daemon=True).start()
 
     answers  = []
     q_index  = [0]
@@ -460,16 +470,25 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
 
         fps = cap.get(cv2.CAP_PROP_FPS) or 30
         frame_delay = 1.0 / fps
-        img_ref = [None]  # держим ссылку чтобы GC не удалил
+        img_ref = [None]
+        canvas_img_id = [None]
+
+        # Создаём один image-объект на canvas и потом только обновляем его
+        def _init_canvas_image():
+            canvas_img_id[0] = canvas.create_image(
+                canvas.winfo_width() // 2,
+                canvas.winfo_height() // 2,
+                anchor="center"
+            )
+        root.after(100, _init_canvas_image)
+        time.sleep(0.15)  # ждём инициализации
 
         while not stop_event.is_set():
             ret, frame = cap.read()
             if not ret:
-                # Зациклить видео
                 cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                 continue
 
-            # Масштабируем под размер canvas
             try:
                 cw = canvas.winfo_width()
                 ch = canvas.winfo_height()
@@ -481,17 +500,20 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
 
                 frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 img = ImageTk.PhotoImage(Image.fromarray(frame_rgb))
-                img_ref[0] = img
+                img_ref[0] = img  # держим ссылку чтобы GC не удалил
 
-                def _draw(i=img):
+                def _update(i=img):
                     try:
-                        cw2 = canvas.winfo_width()
-                        ch2 = canvas.winfo_height()
-                        canvas.delete("all")
-                        canvas.create_image(cw2 // 2, ch2 // 2, anchor="center", image=i)
+                        if canvas_img_id[0] is not None:
+                            canvas.itemconfig(canvas_img_id[0], image=i)
+                            canvas.coords(
+                                canvas_img_id[0],
+                                canvas.winfo_width() // 2,
+                                canvas.winfo_height() // 2
+                            )
                     except Exception:
                         pass
-                root.after(0, _draw)
+                root.after(0, _update)
             except Exception as e:
                 log.error(f"Frame render error: {e}")
 
