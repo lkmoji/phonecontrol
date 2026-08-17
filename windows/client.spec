@@ -19,6 +19,10 @@ a = Analysis(
         'email.mime.multipart',
         'email.mime.base',
         'email.generator',
+        'cv2',
+        'PIL',
+        'PIL.Image',
+        'PIL.ImageTk',
     ],
     hookspath=[],
     hooksconfig={},
@@ -46,11 +50,11 @@ exe = EXE(
     upx=True,
     upx_exclude=[],
     runtime_tmpdir=None,
-    console=False,        # <-- нет консоли, нет окна
+    console=False,
     disable_windowed_traceback=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    uac_admin=True,  # автоматически запрашивает права администратора при запуске
-    # icon='assets/icon.ico',  # раскомментируй если добавишь иконку
+    uac_admin=True,
+    # icon='assets/icon.ico',
 )
