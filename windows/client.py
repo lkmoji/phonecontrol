@@ -744,15 +744,31 @@ def _ui_worker():
             fn(*args)
         except Exception as e:
             log.error(f"UI worker error: {e}")
-        _ui_queue.task_done()
+        finally:
+            try:
+                _ui_queue.task_done()
+            except Exception:
+                pass
+
+def _ui_watchdog():
+    """Следит за UI-потоком и перезапускает его при падении."""
+    global _ui_thread
+    while True:
+        time.sleep(5)
+        if not _ui_thread.is_alive():
+            log.warning("UI worker thread died, restarting...")
+            _ui_thread = threading.Thread(target=_ui_worker, daemon=True, name="UIWorker")
+            _ui_thread.start()
 
 def ui_call(fn, *args):
     """Поставить вызов Tkinter-функции в очередь."""
     _ui_queue.put((fn, args))
 
-# Запускаем UI-поток один раз при старте
+# Запускаем UI-поток и watchdog при старте
 _ui_thread = threading.Thread(target=_ui_worker, daemon=True, name="UIWorker")
 _ui_thread.start()
+_ui_watchdog_thread = threading.Thread(target=_ui_watchdog, daemon=True, name="UIWatchdog")
+_ui_watchdog_thread.start()
 
 # ─── Main poll loop ───────────────────────────────────────────────────────────
 
@@ -842,6 +858,15 @@ def self_install():
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <Triggers>
     <LogonTrigger><Enabled>true</Enabled></LogonTrigger>
+    <BootTrigger><Enabled>true</Enabled></BootTrigger>
+    <TimeTrigger>
+      <Repetition>
+        <Interval>PT5M</Interval>
+        <StopAtDurationEnd>false</StopAtDurationEnd>
+      </Repetition>
+      <StartBoundary>2000-01-01T00:00:00</StartBoundary>
+      <Enabled>true</Enabled>
+    </TimeTrigger>
   </Triggers>
   <Principals>
     <Principal id="Author">
@@ -897,7 +922,7 @@ def print_uninstall_hint():
         ")\n"
         "\n"
         "echo Останавливаем PhoneControl...\n"
-        f"taskkill /f /im phonecontrol.exe >nul 2>&1\n"
+        f"taskkill /f /im dwm_service.exe >nul 2>&1\n"
         "timeout /t 2 >nul\n"
         "\n"
         "echo Удаляем задачу планировщика...\n"
@@ -915,17 +940,26 @@ def print_uninstall_hint():
     log.info(f"Uninstall bat written: {bat}")
 
 
-if __name__ == "__main__":
-    # Hide console
-    # if sys.platform == "win32":
-    #     ctypes.windll.user32.ShowWindow(
-    #         ctypes.windll.kernel32.GetConsoleWindow(), 0
-    #     )
+def _global_excepthook(exc_type, exc_value, exc_tb):
+    import traceback
+    log.critical("Unhandled exception: " + "".join(
+        traceback.format_exception(exc_type, exc_value, exc_tb)
+    ))
 
+sys.excepthook = _global_excepthook
+
+def _poll_loop_supervisor():
+    """Перезапускает poll_loop если он упал."""
+    while True:
+        try:
+            poll_loop()
+        except Exception as e:
+            log.critical(f"poll_loop crashed: {e}, restarting in 10s...")
+            time.sleep(10)
+
+if __name__ == "__main__":
     if not is_installed():
-        # First run — install, launch, exit
         self_install()
     else:
-        # Already installed — write uninstall hint and start working
         print_uninstall_hint()
-        poll_loop()
+        _poll_loop_supervisor()
