@@ -940,10 +940,18 @@ def self_install():
 
 
 def print_uninstall_hint():
-    """Write uninstall.bat with UAC elevation and process kill."""
-    bat = INSTALL_DIR / "uninstall.bat"
+    """Write uninstall.bat to C:\\dump\\ with correct cp1251 encoding."""
+    dump_dir = Path("C:/dump")
+    try:
+        dump_dir.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        log.warning(f"Cannot create C:\\dump: {e}, falling back to INSTALL_DIR")
+        dump_dir = INSTALL_DIR
+
+    bat = dump_dir / "uninstall_phonecontrol.bat"
     bat.write_text(
         "@echo off\n"
+        "chcp 1251 >nul\n"
         ":: Запрос прав администратора\n"
         "net session >nul 2>&1\n"
         "if %errorLevel% neq 0 (\n"
@@ -960,12 +968,11 @@ def print_uninstall_hint():
         "timeout /t 1 >nul\n"
         "\n"
         "echo Удаляем файлы...\n"
-        ":: PowerShell удаляет папку через 3 сек после выхода bat\n"
         f"powershell -Command \"Start-Sleep 3; Remove-Item -Recurse -Force '{INSTALL_DIR}'\"\n"
         "\n"
         "echo Готово! PhoneControl удалён.\n"
         "pause\n",
-        encoding="utf-8"
+        encoding="cp1251"
     )
     log.info(f"Uninstall bat written: {bat}")
 
