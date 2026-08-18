@@ -736,7 +736,7 @@ def handle_command(cmd: dict):
 
     elif name == "show_message":
         text = cmd.get("text", "")
-        ui_call(show_message_overlay, text, fb_mode, rp, survey, chat_id)
+        ui_call("show_message_overlay", text, fb_mode, rp, survey, chat_id)
 
     elif name == "video":
         num  = cmd.get("num", 1)
@@ -744,7 +744,7 @@ def handle_command(cmd: dict):
         if not os.path.exists(path):
             log.warning(f"Built-in video not found: {path}")
             return
-        ui_call(show_video_overlay, path, lock, duration, fb_mode, rp, survey, chat_id)
+        ui_call("show_video_overlay", path, lock, duration, fb_mode, rp, survey, chat_id)
 
     elif name == "play_raw":
         url  = cmd.get("url", "")
@@ -754,13 +754,13 @@ def handle_command(cmd: dict):
             def _download_and_play():
                 prefetch_video(url)
                 if path.exists():
-                    ui_call(show_video_overlay, str(path), lock, duration,
+                    ui_call("show_video_overlay", str(path), lock, duration,
                             fb_mode, rp, survey, chat_id)
                 else:
                     log.error(f"play_raw: could not download {url}")
             threading.Thread(target=_download_and_play, daemon=True).start()
         else:
-            ui_call(show_video_overlay, str(path), lock, duration,
+            ui_call("show_video_overlay", str(path), lock, duration,
                     fb_mode, rp, survey, chat_id)
 
     elif name == "prefetch":
@@ -786,32 +786,17 @@ def handle_command(cmd: dict):
 # Все overlay-вызовы кладём в очередь, единый UI-поток их забирает и исполняет.
 # poll_loop при этом не блокируется — он просто кладёт задачу в очередь и идёт дальше.
 
-import queue as _queue
-_ui_queue: _queue.Queue = _queue.Queue()
-
-def _ui_worker():
-    """Единственный поток, который вызывает Tkinter."""
-    while True:
-        fn, args = _ui_queue.get()
-        log.info(f"UI worker: calling {fn.__name__}")
-        try:
-            fn(*args)
-        except Exception as e:
-            log.error(f"UI worker error in {fn.__name__}: {e}")
-        log.info(f"UI worker: {fn.__name__} returned, calling task_done")
-        try:
-            _ui_queue.task_done()
-        except Exception as e:
-            log.error(f"UI worker task_done error: {e}")
-        log.info("UI worker: ready for next task")
-
-def ui_call(fn, *args):
-    """Поставить вызов Tkinter-функции в очередь."""
-    _ui_queue.put((fn, args))
-
-# Запускаем UI-поток один раз при старте
-_ui_thread = threading.Thread(target=_ui_worker, daemon=True, name="UIWorker")
-_ui_thread.start()
+def ui_call(fn_name: str, *args):
+    """Запускает UI окно в отдельном subprocess — краш окна не трогает основной процесс."""
+    payload = json.dumps({"fn": fn_name, "args": list(args)})
+    try:
+        subprocess.Popen(
+            [sys.executable, "--ui", payload],
+            creationflags=0x00000008,  # DETACHED_PROCESS
+            close_fds=True,
+        )
+    except Exception as e:
+        log.error(f"ui_call failed: {e}")
 
 # ─── Main poll loop ───────────────────────────────────────────────────────────
 
@@ -1021,6 +1006,27 @@ def _poll_loop_supervisor():
             time.sleep(10)
 
 if __name__ == "__main__":
+    # ── UI subprocess mode ────────────────────────────────────────────────────
+    # Когда основной процесс вызывает ui_call, он запускает себя же с --ui
+    # и JSON-payload. Subprocess показывает окно и выходит.
+    # Краш Tcl/Tk убивает только subprocess, основной процесс живёт.
+    if len(sys.argv) >= 3 and sys.argv[1] == "--ui":
+        try:
+            payload = json.loads(sys.argv[2])
+            fn_name = payload["fn"]
+            args    = payload["args"]
+            fn_map  = {
+                "show_message_overlay": show_message_overlay,
+                "show_video_overlay":   show_video_overlay,
+            }
+            fn = fn_map.get(fn_name)
+            if fn:
+                fn(*args)
+            else:
+                log.error(f"Unknown UI fn: {fn_name}")
+        except Exception as e:
+            log.error(f"UI subprocess error: {e}")
+        sys.exit(0)
     # Hide console
     # if sys.platform == "win32":
     #     ctypes.windll.user32.ShowWindow(
