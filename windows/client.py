@@ -248,11 +248,17 @@ def show_message_overlay(text: str, fb_mode: str, reply_prompt: str,
     reply  → text + input + Send (winlocker until sent)
     survey → questions one by one + Send (winlocker until done)
     """
+    log.info(f"show_message_overlay start: fb_mode={fb_mode}")
     stop_event = threading.Event()
     answers    = []
     q_index    = [0]
 
-    root = make_fullscreen_root("#1a1a2e")
+    try:
+        root = make_fullscreen_root("#1a1a2e")
+        log.info("show_message_overlay: root created")
+    except Exception as e:
+        log.error(f"show_message_overlay: root creation failed: {e}")
+        return
 
     # ── Layout ────────────────────────────────────────────────────────────────
     outer = tk.Frame(root, bg="#1a1a2e")
@@ -347,7 +353,12 @@ def show_message_overlay(text: str, fb_mode: str, reply_prompt: str,
         target=keep_on_top, args=(root, stop_event, focus_target), daemon=True
     ).start()
 
-    root.mainloop()
+    log.info("show_message_overlay: entering mainloop")
+    try:
+        root.mainloop()
+    except Exception as e:
+        log.error(f"show_message_overlay mainloop crashed: {e}")
+    log.info("show_message_overlay: mainloop exited")
 
 # ─── Video overlay ────────────────────────────────────────────────────────────
 
