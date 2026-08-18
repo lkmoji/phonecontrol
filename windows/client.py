@@ -232,12 +232,20 @@ def keep_on_top(root: tk.Tk, stop_event: threading.Event,
             root.attributes("-topmost", True)
             root.lift()
             if focus_widget:
-                focus_widget.focus_set()   # мягкий фокус — не прерывает печать
+                try:
+                    if focus_widget.winfo_exists():
+                        focus_widget.focus_set()
+                except Exception:
+                    pass
             else:
-                root.focus_force()
+                try:
+                    if root.winfo_exists():
+                        root.focus_force()
+                except Exception:
+                    pass
         except Exception:
             break
-        time.sleep(1.5)  # увеличен интервал — меньше прерываний
+        time.sleep(1.5)
 
 # ─── MSG overlay ─────────────────────────────────────────────────────────────
 
