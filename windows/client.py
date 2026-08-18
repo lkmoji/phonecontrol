@@ -358,7 +358,8 @@ def show_message_overlay(text: str, fb_mode: str, reply_prompt: str,
         root.mainloop()
     except Exception as e:
         log.error(f"show_message_overlay mainloop crashed: {e}")
-    log.info("show_message_overlay: mainloop exited")
+    log.info("show_message_overlay: done, stop_event set, returning")
+    stop_event.set()
 
 # ─── Video overlay ────────────────────────────────────────────────────────────
 
@@ -995,6 +996,15 @@ def _global_excepthook(exc_type, exc_value, exc_tb):
     ))
 
 sys.excepthook = _global_excepthook
+
+def _threading_excepthook(args):
+    import traceback
+    log.critical("Unhandled thread exception in '{}': {}".format(
+        args.thread.name if args.thread else "unknown",
+        "".join(traceback.format_exception(args.exc_type, args.exc_value, args.exc_traceback))
+    ))
+
+threading.excepthook = _threading_excepthook
 
 def _poll_loop_supervisor():
     while True:
