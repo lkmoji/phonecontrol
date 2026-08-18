@@ -288,7 +288,7 @@ def show_message_overlay(text: str, fb_mode: str, reply_prompt: str,
 
     def do_plain_ok():
         stop_event.set()
-        root.destroy()
+        root.after(0, root.destroy)
 
     def do_send():
         answer = entry.get().strip()
@@ -310,7 +310,7 @@ def show_message_overlay(text: str, fb_mode: str, reply_prompt: str,
                 target=send_text_reply, args=(chat_id, result_text), daemon=True
             ).start()
             stop_event.set()
-            root.destroy()
+            root.after(0, root.destroy)
 
     # ── Configure by mode ─────────────────────────────────────────────────────
     if fb_mode == "plain":
@@ -425,7 +425,7 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
         global _video_window
         _video_window = None
         try:
-            root.destroy()
+            root.after(0, root.destroy)
         except Exception:
             pass
 
