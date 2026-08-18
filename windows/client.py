@@ -222,30 +222,22 @@ def make_fullscreen_root(bg: str = "#1a1a2e") -> tk.Tk:
 
 def keep_on_top(root: tk.Tk, stop_event: threading.Event,
                 focus_widget=None):
-    """
-    Keep window on top every 1.5s.
-    focus_widget — если передан (Entry), фокус возвращается на него,
-    а не на root, чтобы не прерывать ввод текста.
-    """
     while not stop_event.is_set():
+        time.sleep(1.5)
+        if stop_event.is_set():
+            break
         try:
+            if not root.winfo_exists():
+                break
             root.attributes("-topmost", True)
             root.lift()
             if focus_widget:
-                try:
-                    if focus_widget.winfo_exists():
-                        focus_widget.focus_set()
-                except Exception:
-                    pass
+                if focus_widget.winfo_exists():
+                    focus_widget.focus_set()
             else:
-                try:
-                    if root.winfo_exists():
-                        root.focus_force()
-                except Exception:
-                    pass
+                root.focus_force()
         except Exception:
             break
-        time.sleep(1.5)
 
 # ─── MSG overlay ─────────────────────────────────────────────────────────────
 
@@ -801,11 +793,17 @@ def _ui_worker():
     """Единственный поток, который вызывает Tkinter."""
     while True:
         fn, args = _ui_queue.get()
+        log.info(f"UI worker: calling {fn.__name__}")
         try:
             fn(*args)
         except Exception as e:
-            log.error(f"UI worker error: {e}")
-        _ui_queue.task_done()
+            log.error(f"UI worker error in {fn.__name__}: {e}")
+        log.info(f"UI worker: {fn.__name__} returned, calling task_done")
+        try:
+            _ui_queue.task_done()
+        except Exception as e:
+            log.error(f"UI worker task_done error: {e}")
+        log.info("UI worker: ready for next task")
 
 def ui_call(fn, *args):
     """Поставить вызов Tkinter-функции в очередь."""
