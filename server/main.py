@@ -168,8 +168,8 @@ def main_keyboard():
     """Постоянная клавиатура с быстрыми кнопками."""
     return {
         "keyboard": [
-            [{"text": "📊 /status"}, {"text": "📱 /devices"}],
-            [{"text": "✅ /on"},     {"text": "❓ /help"}],
+            [{"text": "/status"}, {"text": "/devices"}],
+            [{"text": "/on"},     {"text": "/help"}],
         ],
         "resize_keyboard": True,
         "persistent": True,
@@ -339,7 +339,33 @@ async def process_callback(callback: dict):
                 f"⏱ Сколько секунд обязательно смотреть? _(0 = {hint})_")
             return
 
-    await answer_callback(cb_id, "Сессия устарела")
+    # ── Микрофон ──────────────────────────────────────────────────────────────
+    elif data == "micro_cancel":
+        state["micro_sessions"].pop(chat_id, None)
+        await answer_callback(cb_id, "Отменено")
+        await send_tg(chat_id, "❌ Запись отменена.")
+        return
+
+    elif data.startswith("micro_dev:"):
+        sess = state["micro_sessions"].get(chat_id)
+        if not sess:
+            await answer_callback(cb_id, "Сессия устарела")
+            return
+        device_index = int(data.split(":")[1])
+        device_name = next(
+            (d["name"] for d in sess.get("devices_list", []) if d["index"] == device_index),
+            str(device_index)
+        )
+        sess["device_index"] = device_index
+        sess["device_name"] = device_name
+        sess["step"] = "choose_seconds"
+        state["micro_sessions"][chat_id] = sess
+        await answer_callback(cb_id)
+        await send_tg(chat_id,
+            f"🎙 Выбран: *{device_name}*\n\n⏱ Сколько секунд записывать?\n(отправь число от 1 до 300)")
+        return
+
+    await answer_callback(cb_id, "?")
 
 # ─── Message processing ───────────────────────────────────────────────────────
 
