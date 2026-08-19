@@ -697,28 +697,91 @@ CACHE_DIR = DATA_DIR / "video_cache"
 CACHE_DIR.mkdir(exist_ok=True)
 
 BUILTIN_VIDEO_DIR = BASE_DIR / "assets"  # assets всегда рядом с exe
+RAW_VIDEO_DIR = INSTALL_DIR / "assets"   # скачанные raw-видео здесь же
 
-def cache_filename(url: str) -> Path:
-    return CACHE_DIR / (uuid.uuid5(uuid.NAMESPACE_URL, url).hex + ".mp4")
+def get_raw_videos() -> list:
+    """Возвращает список raw-видео из assets в порядке raw1, raw2..."""
+    result = []
+    if not RAW_VIDEO_DIR.exists():
+        return result
+    files = sorted(
+        [f for f in RAW_VIDEO_DIR.iterdir()
+         if f.suffix.lower() in ('.mp4', '.mov', '.avi', '.mkv') and f.stem.startswith('raw')],
+        key=lambda f: int(''.join(filter(str.isdigit, f.stem)) or 0)
+    )
+    for i, f in enumerate(files, 1):
+        result.append({"name": f"raw{i}", "filename": f.name, "path": str(f)})
+    return result
 
-def prefetch_video(url: str):
-    dest = cache_filename(url)
-    if dest.exists() and dest.stat().st_size > 0:
-        return
+def next_raw_name() -> str:
+    """Возвращает следующее имя raw-файла (raw1, raw2...)."""
+    existing = get_raw_videos()
+    return f"raw{len(existing) + 1}"
+
+def send_video_list(chat_id: str):
+    """Отправляет список raw-видео на сервер."""
+    videos = get_raw_videos()
+    http_post_json("/video_list", {
+        "chat_id": chat_id,
+        "device_id": DEVICE_ID,
+        "videos": videos,
+    })
+
+def prefetch_video(url: str, chat_id: str = ""):
+    """Скачивает видео в assets с именем rawN."""
+    RAW_VIDEO_DIR.mkdir(exist_ok=True)
+    name = next_raw_name()
+    dest = RAW_VIDEO_DIR / f"{name}.mp4"
     try:
+        log.info(f"Downloading {url} → {dest}")
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=60) as r, open(dest, "wb") as f:
+        with urllib.request.urlopen(req, timeout=120) as r, open(dest, "wb") as f:
             while chunk := r.read(8192):
                 f.write(chunk)
-        log.info(f"Prefetched: {url} → {dest}")
+        log.info(f"Downloaded: {dest}")
+        if chat_id:
+            http_post_json("/text_reply", {
+                "chat_id": chat_id,
+                "text": f"✅ Видео сохранено как *{name}* — воспроизведи через /raw {name[3:]}",
+                "device_id": DEVICE_ID,
+            })
     except Exception as e:
         log.error(f"prefetch_video: {e}")
+        if chat_id:
+            http_post_json("/text_reply", {
+                "chat_id": chat_id,
+                "text": f"⚠️ Ошибка скачивания: {e}",
+                "device_id": DEVICE_ID,
+            })
 
-def delete_video_cache(url: str):
-    dest = cache_filename(url)
-    if dest.exists():
-        dest.unlink()
-        log.info(f"Deleted cache: {url}")
+def delete_raw_video(num: int, chat_id: str = ""):
+    """Удаляет raw-видео по номеру."""
+    videos = get_raw_videos()
+    if num < 1 or num > len(videos):
+        if chat_id:
+            http_post_json("/text_reply", {
+                "chat_id": chat_id,
+                "text": f"⚠️ Нет видео raw{num}",
+                "device_id": DEVICE_ID,
+            })
+        return
+    path = Path(videos[num - 1]["path"])
+    if path.exists():
+        path.unlink()
+        log.info(f"Deleted: {path}")
+    # Переименовываем оставшиеся чтобы не было дырок
+    remaining = get_raw_videos()
+    for i, v in enumerate(remaining, 1):
+        old = Path(v["path"])
+        new = RAW_VIDEO_DIR / f"raw{i}.mp4"
+        if old != new:
+            old.rename(new)
+    if chat_id:
+        http_post_json("/text_reply", {
+            "chat_id": chat_id,
+            "text": f"🗑 raw{num} удалён. Номера обновлены.",
+            "device_id": DEVICE_ID,
+        })
 
 # ─── Command handler ─────────────────────────────────────────────────────────
 
@@ -762,28 +825,31 @@ def handle_command(cmd: dict):
         ui_call("show_video_overlay", path, lock, duration, fb_mode, rp, survey, chat_id)
 
     elif name == "play_raw":
-        url  = cmd.get("url", "")
-        path = cache_filename(url)
-        if not path.exists():
-            # Скачиваем в отдельном потоке, потом ставим в UI-очередь
-            def _download_and_play():
-                prefetch_video(url)
-                if path.exists():
-                    ui_call("show_video_overlay", str(path), lock, duration,
-                            fb_mode, rp, survey, chat_id)
-                else:
-                    log.error(f"play_raw: could not download {url}")
-            threading.Thread(target=_download_and_play, daemon=True).start()
+        raw_num = cmd.get("raw_num", 0)
+        videos = get_raw_videos()
+        if not videos:
+            log.error("play_raw: no raw videos in assets")
+            http_post_json("/text_reply", {"chat_id": chat_id,
+                "text": "⚠️ Нет скачанных видео. Добавь через /addraw", "device_id": DEVICE_ID})
+        elif raw_num < 1 or raw_num > len(videos):
+            log.error(f"play_raw: invalid num {raw_num}")
+            http_post_json("/text_reply", {"chat_id": chat_id,
+                "text": f"⚠️ Нет видео raw{raw_num}", "device_id": DEVICE_ID})
         else:
-            ui_call("show_video_overlay", str(path), lock, duration,
+            path = videos[raw_num - 1]["path"]
+            ui_call("show_video_overlay", path, lock, duration,
                     fb_mode, rp, survey, chat_id)
 
     elif name == "prefetch":
         url = cmd.get("url", "")
-        threading.Thread(target=prefetch_video, args=(url,), daemon=True).start()
+        threading.Thread(target=prefetch_video, args=(url, chat_id), daemon=True).start()
+
+    elif name == "get_video_list":
+        threading.Thread(target=send_video_list, args=(chat_id,), daemon=True).start()
 
     elif name == "delete_video":
-        delete_video_cache(cmd.get("url", ""))
+        num = cmd.get("num", 0)
+        threading.Thread(target=delete_raw_video, args=(num, chat_id), daemon=True).start()
 
     elif name == "unban_video":
         unban_video()
