@@ -581,26 +581,22 @@ async def process_update(update: dict):
                 fid = url.split("/file/d/")[1].split("/")[0]
                 url = f"https://drive.google.com/uc?export=download&confirm=t&id={fid}"
             except: pass
-        entry = {"id": str(uuid.uuid4())[:6], "url": url, "added": datetime.now().strftime("%d.%m %H:%M")}
-        state["raw_links"].append(entry)
-        num = len(state["raw_links"])
-        await send_tg(chat_id, f"✅ Ссылка *{num}* добавлена.")
-        dev_id = selected_device_id(chat_id)
-        if dev_id and dev_id in devices and devices[dev_id]["active"]:
-            cmd_id = str(uuid.uuid4())[:8]
-            devices[dev_id]["pending_commands"].append({"cmd": "prefetch", "url": url, "_id": cmd_id})
-            devices[dev_id]["command_callbacks"][cmd_id] = chat_id
-            await send_tg(chat_id, "📥 Отправлено на скачивание.")
+        dev_id, err = require_device(chat_id)
+        if err:
+            await send_tg(chat_id, err)
+            return
+        await enqueue_command(chat_id, dev_id,
+            {"cmd": "prefetch", "url": url}, "скачать видео")
+        await send_tg(chat_id, "📥 Отправлено на скачивание. После завершения появится в /lists.")
 
     elif text == "/lists":
-        if not state["raw_links"]:
-            await send_tg(chat_id, "📭 Пусто. /addraw <url>")
-            return
-        lines = ["📋 *Видео по ссылкам:*\n"]
-        for i, e in enumerate(state["raw_links"], 1):
-            p = e["url"][:50] + "..." if len(e["url"]) > 50 else e["url"]
-            lines.append(f"{i}. `{p}`\n   {e['added']}")
-        await send_tg(chat_id, "\n".join(lines))
+        dev_id, err = require_device(chat_id)
+        if err:
+            await send_tg(chat_id, err)
+        else:
+            await enqueue_command(chat_id, dev_id,
+                {"cmd": "get_video_list"}, "список видео")
+            await send_tg(chat_id, "⏳ Запрашиваю список видео с ПК...")
 
     elif text.startswith("/raw "):
         dev_id, err = require_device(chat_id)
@@ -612,26 +608,21 @@ async def process_update(update: dict):
             await send_tg(chat_id, "⚠️ /raw 1")
             return
         num = int(parts[1])
-        if num < 1 or num > len(state["raw_links"]):
-            await send_tg(chat_id, f"⚠️ Нет номера {num}.")
-            return
-        await start_video_flow(chat_id, "play_raw", video_url=state["raw_links"][num - 1]["url"])
+        await start_video_flow(chat_id, "play_raw", raw_num=num)
 
     elif text.startswith("/delvideo "):
+        dev_id, err = require_device(chat_id)
+        if err:
+            await send_tg(chat_id, err)
+            return
         parts = text.split()
         if len(parts) != 2 or not parts[1].isdigit():
             await send_tg(chat_id, "⚠️ /delvideo 1")
             return
         num = int(parts[1])
-        if num < 1 or num > len(state["raw_links"]):
-            await send_tg(chat_id, f"⚠️ Нет номера {num}.")
-            return
-        entry = state["raw_links"].pop(num - 1)
-        dev_id = selected_device_id(chat_id)
-        if dev_id and dev_id in devices and devices[dev_id]["active"]:
-            await enqueue_command(chat_id, dev_id,
-                {"cmd": "delete_video", "url": entry["url"]}, f"удалить кэш {num}")
-        await send_tg(chat_id, f"🗑 Ссылка {num} удалена.")
+        await enqueue_command(chat_id, dev_id,
+            {"cmd": "delete_video", "num": num}, f"удалить видео raw{num}")
+        await send_tg(chat_id, f"🗑 Удаляю raw{num} с ПК...")
 
     elif text == "/unbanvideo":
         dev_id, err = require_device(chat_id)
@@ -739,6 +730,32 @@ async def upload(
 
     asyncio.create_task(send_tg_file(chat_id, data, filename, caption))
     return {"ok": True, "size": len(data)}
+
+
+# ─── Video list endpoint (ПК присылает список raw-видео) ────────────────────────
+
+@app.post("/video_list")
+async def video_list_endpoint(
+    body: dict,
+    x_device_secret: Optional[str] = Header(None),
+):
+    if x_device_secret != DEVICE_SECRET:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    chat_id = body.get("chat_id") or ALLOWED_CHAT_ID
+    videos = body.get("videos", [])  # [{name, filename}, ...]
+
+    if not videos:
+        await send_tg(chat_id, "📭 На ПК нет скачанных видео. Добавь через /addraw <url>")
+        return {"ok": True}
+
+    lines = ["📋 *Видео на ПК:*\n"]
+    for v in videos:
+        lines.append(f"`{v['name']}` — {v['filename']}")
+    lines.append("\n▶️ /raw <номер> — воспроизвести")
+    lines.append("🗑 /delvideo <номер> — удалить")
+    await send_tg(chat_id, "\n".join(lines))
+    return {"ok": True}
 
 
 # ─── Micro devices endpoint (ПК присылает список микрофонов) ────────────────────
