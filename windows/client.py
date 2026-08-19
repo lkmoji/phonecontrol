@@ -351,7 +351,6 @@ def show_message_overlay(text: str, fb_mode: str, reply_prompt: str,
 
 # ─── Video overlay ────────────────────────────────────────────────────────────
 
-import cv2
 from PIL import Image, ImageTk
 
 # Global reference so /unbanvideo can close it
