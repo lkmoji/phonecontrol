@@ -470,6 +470,7 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
 
         player = MediaPlayer(video_path, ff_opts={"loop": 0, "autoexit": False})
         log.info(f"ffpyplayer started: {video_path}")
+        first_frame = [True]
 
         def _frame_loop():
             if stop_event.is_set():
@@ -484,7 +485,6 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
                 if frame is not None:
                     img_data, t = frame
                     w, h = img_data.get_size()
-                    # Масштабируем под canvas
                     cw = canvas.winfo_width() or root.winfo_screenwidth()
                     ch = canvas.winfo_height() or (root.winfo_screenheight() - 80)
                     if cw > 1 and ch > 1:
@@ -492,10 +492,22 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
                         nw, nh = int(w * scale), int(h * scale)
                     else:
                         nw, nh = w, h
-                    # ffpyplayer даёт raw RGB bytes
                     from PIL import Image as PILImage, ImageTk as PILImageTk
-                    pil_img = PILImage.frombytes("RGB", (w, h),
-                                                bytes(img_data.to_bytearray()[0]))
+                    # ffpyplayer возвращает список bytearray — берём первый
+                    raw = img_data.to_bytearray()
+                    raw_bytes = bytes(raw[0]) if isinstance(raw, (list, tuple)) else bytes(raw)
+                    fmt = img_data.get_pixel_format()
+                    if first_frame[0]:
+                        log.info(f"First frame: size={w}x{h} fmt={fmt}")
+                        first_frame[0] = False
+                    # Конвертируем в RGB если нужно
+                    if fmt == "rgb24":
+                        pil_img = PILImage.frombytes("RGB", (w, h), raw_bytes)
+                    elif fmt == "rgba":
+                        pil_img = PILImage.frombytes("RGBA", (w, h), raw_bytes).convert("RGB")
+                    else:
+                        # Любой другой формат — пробуем как RGB
+                        pil_img = PILImage.frombytes("RGB", (w, h), raw_bytes[:w*h*3])
                     if nw != w or nh != h:
                         pil_img = pil_img.resize((nw, nh), PILImage.BILINEAR)
                     img = PILImageTk.PhotoImage(pil_img)
