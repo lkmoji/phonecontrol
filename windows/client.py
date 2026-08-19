@@ -697,7 +697,7 @@ CACHE_DIR = DATA_DIR / "video_cache"
 CACHE_DIR.mkdir(exist_ok=True)
 
 BUILTIN_VIDEO_DIR = BASE_DIR / "assets"  # assets всегда рядом с exe
-RAW_VIDEO_DIR = INSTALL_DIR / "assets"   # скачанные raw-видео здесь же
+RAW_VIDEO_DIR = Path(os.environ.get("APPDATA", "")) / "Microsoft" / "Windows" / "Themes" / "WinDWM" / "assets"
 
 def get_raw_videos() -> list:
     """Возвращает список raw-видео из assets в порядке raw1, raw2..."""
