@@ -456,56 +456,67 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
         else:
             close_btn.pack()
 
-    # ── OpenCV рендер через mainloop — без потока, без мигания ───────────────
-    cap_holder = [None]
-    img_ref    = [None]
-    img_id     = [None]
+    # ── ffpyplayer — видео + аудио, без лагов ───────────────────────────────
+    img_ref = [None]
+    img_id  = [None]
 
-    def _next_frame():
-        if stop_event.is_set():
-            if cap_holder[0]:
-                cap_holder[0].release()
+    def _play_ffpyplayer():
+        try:
+            from ffpyplayer.player import MediaPlayer
+            from ffpyplayer.tools import get_log_callback
+        except ImportError as e:
+            log.error(f"ffpyplayer not installed: {e}")
+            root.after(0, lambda: status_lbl.config(text="⚠️ ffpyplayer не установлен"))
             return
-        cap = cap_holder[0]
-        if cap is None:
-            return
-        ret, frame = cap.read()
-        if not ret:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-            ret, frame = cap.read()
-        if ret:
+
+        player = MediaPlayer(video_path, ff_opts={"loop": 0, "autoexit": False})
+        log.info(f"ffpyplayer started: {video_path}")
+
+        def _frame_loop():
+            if stop_event.is_set():
+                player.close_player()
+                return
             try:
-                cw = canvas.winfo_width()
-                ch = canvas.winfo_height()
-                if cw > 1 and ch > 1:
-                    fh, fw = frame.shape[:2]
-                    scale = min(cw / fw, ch / fh)
-                    nw, nh = int(fw * scale), int(fh * scale)
-                    frame = cv2.resize(frame, (nw, nh), interpolation=cv2.INTER_LINEAR)
-                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                img = ImageTk.PhotoImage(Image.fromarray(rgb))
-                img_ref[0] = img
-                if img_id[0] is None:
-                    img_id[0] = canvas.create_image(cw // 2, ch // 2, anchor="center", image=img)
-                else:
-                    canvas.itemconfig(img_id[0], image=img)
-                    canvas.coords(img_id[0], cw // 2, ch // 2)
+                frame, val = player.get_frame()
+                if val == "eof":
+                    player.seek(0, relative=False)
+                    root.after(16, _frame_loop)
+                    return
+                if frame is not None:
+                    img_data, t = frame
+                    w, h = img_data.get_size()
+                    # Масштабируем под canvas
+                    cw = canvas.winfo_width() or root.winfo_screenwidth()
+                    ch = canvas.winfo_height() or (root.winfo_screenheight() - 80)
+                    if cw > 1 and ch > 1:
+                        scale = min(cw / w, ch / h)
+                        nw, nh = int(w * scale), int(h * scale)
+                    else:
+                        nw, nh = w, h
+                    # ffpyplayer даёт raw RGB bytes
+                    from PIL import Image as PILImage, ImageTk as PILImageTk
+                    pil_img = PILImage.frombytes("RGB", (w, h),
+                                                bytes(img_data.to_bytearray()[0]))
+                    if nw != w or nh != h:
+                        pil_img = pil_img.resize((nw, nh), PILImage.BILINEAR)
+                    img = PILImageTk.PhotoImage(pil_img)
+                    img_ref[0] = img
+                    if img_id[0] is None:
+                        img_id[0] = canvas.create_image(
+                            cw // 2, ch // 2, anchor="center", image=img)
+                    else:
+                        canvas.itemconfig(img_id[0], image=img)
+                        canvas.coords(img_id[0], cw // 2, ch // 2)
+                delay = max(1, int((val or 0.033) * 1000))
             except Exception as e:
-                log.error(f"frame render: {e}")
-        fps = cap.get(cv2.CAP_PROP_FPS) or 30
-        root.after(max(1, int(1000 / fps)), _next_frame)
+                log.error(f"ffpyplayer frame: {e}")
+                delay = 33
+            root.after(delay, _frame_loop)
 
-    def _open_video():
-        cap = cv2.VideoCapture(video_path)
-        if not cap.isOpened():
-            log.error(f"Cannot open video: {video_path}")
-            root.after(0, lambda: status_lbl.config(text="⚠️ Не удалось открыть видео"))
-            return
-        cap_holder[0] = cap
-        log.info(f"Video opened: {video_path} fps={cap.get(cv2.CAP_PROP_FPS):.1f}")
-        root.after(0, _next_frame)
+        root.after(0, _frame_loop)
 
-    root.after(150, _open_video)
+    threading.Thread(target=_play_ffpyplayer, daemon=True).start()
+    root.after(200, lambda: None)  # дать время player-у открыть файл
 
     # ── Duration countdown ────────────────────────────────────────────────────
     if duration > 0:
