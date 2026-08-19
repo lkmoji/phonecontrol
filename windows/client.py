@@ -458,23 +458,27 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
     # ── ffpyplayer — видео + аудио, без лагов ───────────────────────────────
     img_ref = [None]
     img_id  = [None]
+    player_holder = [None]
 
-    def _play_ffpyplayer():
+    def _start_player():
         try:
             from ffpyplayer.player import MediaPlayer
-            from ffpyplayer.tools import get_log_callback
         except ImportError as e:
             log.error(f"ffpyplayer not installed: {e}")
-            root.after(0, lambda: status_lbl.config(text="⚠️ ffpyplayer не установлен"))
+            status_lbl.config(text="⚠️ ffpyplayer не установлен")
             return
 
         player = MediaPlayer(video_path, ff_opts={"loop": 0, "autoexit": False})
+        player_holder[0] = player
         log.info(f"ffpyplayer started: {video_path}")
         first_frame = [True]
 
         def _frame_loop():
             if stop_event.is_set():
-                player.close_player()
+                try:
+                    player.close_player()
+                except Exception:
+                    pass
                 return
             try:
                 frame, val = player.get_frame()
@@ -487,47 +491,40 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
                     w, h = img_data.get_size()
                     cw = canvas.winfo_width() or root.winfo_screenwidth()
                     ch = canvas.winfo_height() or (root.winfo_screenheight() - 80)
-                    if cw > 1 and ch > 1:
-                        scale = min(cw / w, ch / h)
-                        nw, nh = int(w * scale), int(h * scale)
-                    else:
-                        nw, nh = w, h
-                    from PIL import Image as PILImage, ImageTk as PILImageTk
-                    # ffpyplayer возвращает список bytearray — берём первый
+                    scale = min(cw / w, ch / h) if cw > 1 and ch > 1 else 1
+                    nw, nh = int(w * scale), int(h * scale)
                     raw = img_data.to_bytearray()
                     raw_bytes = bytes(raw[0]) if isinstance(raw, (list, tuple)) else bytes(raw)
                     fmt = img_data.get_pixel_format()
                     if first_frame[0]:
                         log.info(f"First frame: size={w}x{h} fmt={fmt}")
                         first_frame[0] = False
-                    # Конвертируем в RGB если нужно
-                    if fmt == "rgb24":
-                        pil_img = PILImage.frombytes("RGB", (w, h), raw_bytes)
-                    elif fmt == "rgba":
+                    from PIL import Image as PILImage, ImageTk as PILImageTk
+                    if fmt == "rgba":
                         pil_img = PILImage.frombytes("RGBA", (w, h), raw_bytes).convert("RGB")
                     else:
-                        # Любой другой формат — пробуем как RGB
                         pil_img = PILImage.frombytes("RGB", (w, h), raw_bytes[:w*h*3])
                     if nw != w or nh != h:
                         pil_img = pil_img.resize((nw, nh), PILImage.BILINEAR)
                     img = PILImageTk.PhotoImage(pil_img)
                     img_ref[0] = img
                     if img_id[0] is None:
-                        img_id[0] = canvas.create_image(
-                            cw // 2, ch // 2, anchor="center", image=img)
+                        img_id[0] = canvas.create_image(cw // 2, ch // 2, anchor="center", image=img)
                     else:
                         canvas.itemconfig(img_id[0], image=img)
                         canvas.coords(img_id[0], cw // 2, ch // 2)
-                delay = max(1, int((val or 0.033) * 1000))
+                delay = max(1, int((val or 0.033) * 1000)) if val and val != "eof" else 33
             except Exception as e:
                 log.error(f"ffpyplayer frame: {e}")
                 delay = 33
             root.after(delay, _frame_loop)
 
-        root.after(0, _frame_loop)
+        # _frame_loop вызывается из главного потока через after — безопасно
+        root.after(100, _frame_loop)
 
-    threading.Thread(target=_play_ffpyplayer, daemon=True).start()
-    root.after(200, lambda: None)  # дать время player-у открыть файл
+    # MediaPlayer создаётся в главном потоке через after
+    root.after(150, _start_player)
+
 
     # ── Duration countdown ────────────────────────────────────────────────────
     if duration > 0:
