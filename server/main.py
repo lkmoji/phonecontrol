@@ -205,18 +205,19 @@ def devices_keyboard():
 
 # ─── Video flow ───────────────────────────────────────────────────────────────
 
-async def start_video_flow(chat_id: str, video_cmd: str, video_num: int = 0, video_url: str = ""):
+async def start_video_flow(chat_id: str, video_cmd: str, video_num: int = 0, video_url: str = "", raw_num: int = 0):
     """Сначала спрашиваем режим обратной связи, потом блокировку."""
     state["video_sessions"][chat_id] = {
-        "step": "mode",          # mode → lock → duration → done
+        "step": "mode",
         "video_cmd": video_cmd,
         "video_num": video_num,
         "video_url": video_url,
+        "raw_num": raw_num,
         "lock": False,
         "duration": 0,
-        "fb_mode": "plain",      # plain | reply | survey
+        "fb_mode": "plain",
     }
-    name = f"video{video_num}" if video_num else "raw видео"
+    name = f"video{video_num}" if video_num else (f"raw{raw_num}" if raw_num else "raw видео")
     await send_tg(chat_id,
         f"🎬 *{name}*\n\nВыбери режим обратной связи:",
         reply_markup=video_mode_keyboard())
@@ -429,8 +430,8 @@ async def process_update(update: dict):
             cmd["num"] = vsess["video_num"]
             desc = f"video{vsess['video_num']}"
         else:
-            cmd["url"] = vsess["video_url"]
-            desc = "raw видео"
+            cmd["raw_num"] = vsess.get("raw_num", 0)
+            desc = f"raw{vsess.get('raw_num', '?')}"
 
         if vsess["fb_mode"] == "survey":
             build_survey_cmd(cmd)
@@ -751,7 +752,8 @@ async def video_list_endpoint(
 
     lines = ["📋 *Видео на ПК:*\n"]
     for v in videos:
-        lines.append(f"`{v['name']}` — {v['filename']}")
+        fname = v['filename'].replace('.', '\\.')
+        lines.append(f"`{v['name']}` — {fname}")
     lines.append("\n▶️ /raw <номер> — воспроизвести")
     lines.append("🗑 /delvideo <номер> — удалить")
     await send_tg(chat_id, "\n".join(lines))
