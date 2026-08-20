@@ -490,96 +490,70 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
         else:
             close_btn.pack()
 
-    # ── ffpyplayer — декодирование в потоке, рендер в главном потоке ─────────
-    img_ref = [None]
-    img_id  = [None]
-    pending_img = [None]  # готовый кадр ждёт рендера
-
-    def _decode_thread():
+    # ── ffpyplayer + pygame — нативный рендер без PIL ─────────────────────────
+    # pygame рендерит в отдельном окне поверх tkinter
+    def _pygame_player():
         try:
+            import pygame
             from ffpyplayer.player import MediaPlayer
-            from PIL import Image as PILImage
         except ImportError as e:
-            log.error(f"ffpyplayer/PIL not installed: {e}")
-            root.after(0, lambda: status_lbl.config(text="⚠️ ffpyplayer не установлен"))
+            log.error(f"pygame/ffpyplayer not installed: {e}")
+            root.after(0, lambda: status_lbl.config(text="⚠️ pygame не установлен"))
             return
 
+        # Получаем HWND canvas чтобы встроить pygame в него
+        import os
+        os.environ["SDL_WINDOWID"] = str(canvas.winfo_id())
+        os.environ["SDL_VIDEODRIVER"] = "windib"
+
+        pygame.init()
+        cw = canvas.winfo_width() or root.winfo_screenwidth()
+        ch = canvas.winfo_height() or (root.winfo_screenheight() - 80)
+        screen = pygame.display.set_mode((cw, ch), 0)
+        pygame.display.set_caption("")
+
         player = MediaPlayer(video_path, ff_opts={"loop": 0, "autoexit": False})
-        log.info(f"ffpyplayer started: {video_path}")
-        first_frame = True
-        cw = root.winfo_screenwidth()
-        ch = root.winfo_screenheight() - 80
+        log.info(f"ffpyplayer+pygame started: {video_path}")
+        clock = pygame.time.Clock()
+        first = True
 
         while not stop_event.is_set():
-            try:
-                frame, val = player.get_frame()
-                if val == "eof":
-                    player.seek(0, relative=False)
-                    continue
-                if frame is None:
-                    time.sleep(0.005)
-                    continue
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    stop_event.set()
 
+            frame, val = player.get_frame()
+            if val == "eof":
+                player.seek(0, relative=False)
+                continue
+            if frame is not None:
                 img_data, t = frame
                 w, h = img_data.get_size()
-
-                if first_frame:
+                if first:
                     fmt = img_data.get_pixel_format()
-                    log.info(f"First frame: size={w}x{h} fmt={fmt}")
-                    first_frame = False
-                    cw = canvas.winfo_width() or cw
-                    ch = canvas.winfo_height() or ch
-
-                scale = min(cw / w, ch / h)
-                nw, nh = int(w * scale), int(h * scale)
-
+                    log.info(f"First frame: {w}x{h} fmt={fmt}")
+                    first = False
                 raw = img_data.to_bytearray()
                 raw_bytes = bytes(raw[0]) if isinstance(raw, (list, tuple)) else bytes(raw)
-                fmt = img_data.get_pixel_format()
-                if fmt == "rgba":
-                    pil_img = PILImage.frombytes("RGBA", (w, h), raw_bytes).convert("RGB")
-                else:
-                    pil_img = PILImage.frombytes("RGB", (w, h), raw_bytes[:w*h*3])
-                if nw != w or nh != h:
-                    pil_img = pil_img.resize((nw, nh), PILImage.LANCZOS)
+                try:
+                    surf = pygame.image.frombuffer(raw_bytes, (w, h), "RGB")
+                    scaled = pygame.transform.smoothscale(surf, (cw, ch))
+                    screen.blit(scaled, (0, 0))
+                    pygame.display.flip()
+                except Exception as e:
+                    log.error(f"pygame render: {e}")
 
-                pending_img[0] = (pil_img, cw, ch)
-
-                # Синхронизация с FPS
-                sleep = val if val and val != "eof" else 0.033
-                time.sleep(max(0, sleep))
-
-            except Exception as e:
-                log.error(f"decode thread: {e}")
-                time.sleep(0.033)
+            fps = player.get_pts() and 30 or 30
+            clock.tick(60)
 
         try:
             player.close_player()
         except Exception:
             pass
+        pygame.quit()
 
-    def _render_loop():
-        if stop_event.is_set():
-            return
-        item = pending_img[0]
-        if item is not None:
-            pending_img[0] = None
-            pil_img, cw, ch = item
-            try:
-                from PIL import ImageTk as PILImageTk
-                img = PILImageTk.PhotoImage(pil_img)
-                img_ref[0] = img
-                if img_id[0] is None:
-                    img_id[0] = canvas.create_image(cw // 2, ch // 2, anchor="center", image=img)
-                else:
-                    canvas.itemconfig(img_id[0], image=img)
-                    canvas.coords(img_id[0], cw // 2, ch // 2)
-            except Exception as e:
-                log.error(f"render: {e}")
-        root.after(16, _render_loop)  # ~60fps рендер
-
-    threading.Thread(target=_decode_thread, daemon=True).start()
-    root.after(200, _render_loop)
+    threading.Thread(target=_pygame_player, daemon=True).start()
+    root.after(200, lambda: None)
 
 
     # ── Duration countdown ────────────────────────────────────────────────────
