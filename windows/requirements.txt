@@ -5,3 +5,4 @@ Pillow>=10.0.0
 sounddevice>=0.4.6
 numpy>=1.26.0
 ffpyplayer>=4.3.5
+pygame>=2.5.0
