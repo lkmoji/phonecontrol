@@ -337,11 +337,13 @@ def show_message_overlay(text: str, fb_mode: str, reply_prompt: str,
                 f"Q: {survey[i]}\nA: {answers[i]}"
                 for i in range(len(answers))
             ) if fb_mode == "survey" else answers[0]
-            threading.Thread(
-                target=send_text_reply, args=(chat_id, result_text), daemon=True
-            ).start()
-            stop_event.set()
-            root.after(0, root.destroy)
+            prompt_lbl.config(text="📤 Отправляю...")
+            entry.config(state="disabled")
+            def _send_and_close():
+                send_text_reply(chat_id, result_text)
+                stop_event.set()
+                root.after(0, root.destroy)
+            threading.Thread(target=_send_and_close, daemon=True).start()
 
     # ── Configure by mode ─────────────────────────────────────────────────────
     if fb_mode == "plain":
@@ -461,10 +463,12 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
             result = "\n".join(
                 f"Q: {survey[i]}\nA: {answers[i]}" for i in range(len(answers))
             ) if fb_mode == "survey" else answers[0]
-            threading.Thread(
-                target=send_text_reply, args=(chat_id, result), daemon=True
-            ).start()
-            do_close()
+            status_lbl.config(text="📤 Отправляю...")
+            send_btn.config(state="disabled")
+            def _send_and_close():
+                send_text_reply(chat_id, result)
+                root.after(0, do_close)
+            threading.Thread(target=_send_and_close, daemon=True).start()
 
     send_btn.config(command=do_send)
     close_btn.config(command=do_close)
@@ -486,75 +490,96 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
         else:
             close_btn.pack()
 
-    # ── ffpyplayer — видео + аудио, без лагов ───────────────────────────────
+    # ── ffpyplayer — декодирование в потоке, рендер в главном потоке ─────────
     img_ref = [None]
     img_id  = [None]
-    player_holder = [None]
+    pending_img = [None]  # готовый кадр ждёт рендера
 
-    def _start_player():
+    def _decode_thread():
         try:
             from ffpyplayer.player import MediaPlayer
+            from PIL import Image as PILImage
         except ImportError as e:
-            log.error(f"ffpyplayer not installed: {e}")
-            status_lbl.config(text="⚠️ ffpyplayer не установлен")
+            log.error(f"ffpyplayer/PIL not installed: {e}")
+            root.after(0, lambda: status_lbl.config(text="⚠️ ffpyplayer не установлен"))
             return
 
         player = MediaPlayer(video_path, ff_opts={"loop": 0, "autoexit": False})
-        player_holder[0] = player
         log.info(f"ffpyplayer started: {video_path}")
-        first_frame = [True]
+        first_frame = True
+        cw = root.winfo_screenwidth()
+        ch = root.winfo_screenheight() - 80
 
-        def _frame_loop():
-            if stop_event.is_set():
-                try:
-                    player.close_player()
-                except Exception:
-                    pass
-                return
+        while not stop_event.is_set():
             try:
                 frame, val = player.get_frame()
                 if val == "eof":
                     player.seek(0, relative=False)
-                    root.after(16, _frame_loop)
-                    return
-                if frame is not None:
-                    img_data, t = frame
-                    w, h = img_data.get_size()
-                    cw = canvas.winfo_width() or root.winfo_screenwidth()
-                    ch = canvas.winfo_height() or (root.winfo_screenheight() - 80)
-                    scale = min(cw / w, ch / h) if cw > 1 and ch > 1 else 1
-                    nw, nh = int(w * scale), int(h * scale)
-                    raw = img_data.to_bytearray()
-                    raw_bytes = bytes(raw[0]) if isinstance(raw, (list, tuple)) else bytes(raw)
+                    continue
+                if frame is None:
+                    time.sleep(0.005)
+                    continue
+
+                img_data, t = frame
+                w, h = img_data.get_size()
+
+                if first_frame:
                     fmt = img_data.get_pixel_format()
-                    if first_frame[0]:
-                        log.info(f"First frame: size={w}x{h} fmt={fmt}")
-                        first_frame[0] = False
-                    from PIL import Image as PILImage, ImageTk as PILImageTk
-                    if fmt == "rgba":
-                        pil_img = PILImage.frombytes("RGBA", (w, h), raw_bytes).convert("RGB")
-                    else:
-                        pil_img = PILImage.frombytes("RGB", (w, h), raw_bytes[:w*h*3])
-                    if nw != w or nh != h:
-                        pil_img = pil_img.resize((nw, nh), PILImage.BILINEAR)
-                    img = PILImageTk.PhotoImage(pil_img)
-                    img_ref[0] = img
-                    if img_id[0] is None:
-                        img_id[0] = canvas.create_image(cw // 2, ch // 2, anchor="center", image=img)
-                    else:
-                        canvas.itemconfig(img_id[0], image=img)
-                        canvas.coords(img_id[0], cw // 2, ch // 2)
-                delay = max(1, int((val or 0.033) * 1000)) if val and val != "eof" else 33
+                    log.info(f"First frame: size={w}x{h} fmt={fmt}")
+                    first_frame = False
+                    cw = canvas.winfo_width() or cw
+                    ch = canvas.winfo_height() or ch
+
+                scale = min(cw / w, ch / h)
+                nw, nh = int(w * scale), int(h * scale)
+
+                raw = img_data.to_bytearray()
+                raw_bytes = bytes(raw[0]) if isinstance(raw, (list, tuple)) else bytes(raw)
+                fmt = img_data.get_pixel_format()
+                if fmt == "rgba":
+                    pil_img = PILImage.frombytes("RGBA", (w, h), raw_bytes).convert("RGB")
+                else:
+                    pil_img = PILImage.frombytes("RGB", (w, h), raw_bytes[:w*h*3])
+                if nw != w or nh != h:
+                    pil_img = pil_img.resize((nw, nh), PILImage.NEAREST)
+
+                pending_img[0] = (pil_img, cw, ch)
+
+                # Синхронизация с FPS
+                sleep = val if val and val != "eof" else 0.033
+                time.sleep(max(0, sleep))
+
             except Exception as e:
-                log.error(f"ffpyplayer frame: {e}")
-                delay = 33
-            root.after(delay, _frame_loop)
+                log.error(f"decode thread: {e}")
+                time.sleep(0.033)
 
-        # _frame_loop вызывается из главного потока через after — безопасно
-        root.after(100, _frame_loop)
+        try:
+            player.close_player()
+        except Exception:
+            pass
 
-    # MediaPlayer создаётся в главном потоке через after
-    root.after(150, _start_player)
+    def _render_loop():
+        if stop_event.is_set():
+            return
+        item = pending_img[0]
+        if item is not None:
+            pending_img[0] = None
+            pil_img, cw, ch = item
+            try:
+                from PIL import ImageTk as PILImageTk
+                img = PILImageTk.PhotoImage(pil_img)
+                img_ref[0] = img
+                if img_id[0] is None:
+                    img_id[0] = canvas.create_image(cw // 2, ch // 2, anchor="center", image=img)
+                else:
+                    canvas.itemconfig(img_id[0], image=img)
+                    canvas.coords(img_id[0], cw // 2, ch // 2)
+            except Exception as e:
+                log.error(f"render: {e}")
+        root.after(16, _render_loop)  # ~60fps рендер
+
+    threading.Thread(target=_decode_thread, daemon=True).start()
+    root.after(200, _render_loop)
 
 
     # ── Duration countdown ────────────────────────────────────────────────────
