@@ -496,7 +496,15 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
     def _start_vlc():
         try:
             import vlc
-            instance = vlc.Instance("--no-xlib", "--quiet")
+            import sys
+
+            # Указываем путь к плагинам внутри exe bundle
+            meipass = getattr(sys, '_MEIPASS', None)
+            if meipass:
+                plugins_path = os.path.join(meipass, 'vlc_plugins')
+                instance = vlc.Instance(f"--plugin-path={plugins_path}", "--no-xlib", "--quiet")
+            else:
+                instance = vlc.Instance("--no-xlib", "--quiet")
             player = instance.media_player_new()
             media = instance.media_new(video_path)
             media.add_option("input-repeat=65535")  # зациклить
