@@ -490,134 +490,43 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
         else:
             close_btn.pack()
 
-    # ── ffpyplayer + PIL — буферизированное воспроизведение ──────────────────
-    import queue as _queue
-    frame_queue = _queue.Queue(maxsize=60)  # буфер ~2 сек при 30fps
-    img_ref = [None]
-    img_id  = [None]
+    # ── VLC встроенный в canvas через HWND — нативный рендер ─────────────────
+    vlc_holder = [None]
 
-    BUFFER_PRELOAD = 30  # кадров перед стартом рендера
-
-    def _decode_thread():
+    def _start_vlc():
         try:
-            from ffpyplayer.player import MediaPlayer
-            from PIL import Image as PILImage
-            import numpy as np
-        except ImportError as e:
-            log.error(f"ffpyplayer/PIL not installed: {e}")
-            root.after(0, lambda: status_lbl.config(text="⚠️ ffpyplayer не установлен"))
-            return
+            import vlc
+            instance = vlc.Instance("--no-xlib", "--quiet")
+            player = instance.media_player_new()
+            media = instance.media_new(video_path)
+            media.add_option("input-repeat=65535")  # зациклить
+            player.set_media(media)
 
-        player = MediaPlayer(video_path, ff_opts={"loop": 0, "autoexit": False})
-        log.info(f"ffpyplayer started: {video_path}")
-        first = True
-        cw = root.winfo_screenwidth()
-        ch = root.winfo_screenheight() - 80
-        scale_size = [None]  # вычисляем один раз
+            # Встраиваем в HWND canvas
+            hwnd = canvas.winfo_id()
+            player.set_hwnd(hwnd)
 
-        while not stop_event.is_set():
-            try:
-                if frame_queue.full():
-                    time.sleep(0.005)
-                    continue
+            player.play()
+            vlc_holder[0] = player
+            log.info(f"VLC started: {video_path}")
 
-                frame, val = player.get_frame()
-                if val == "eof":
-                    player.seek(0, relative=False)
-                    continue
-                if frame is None:
-                    time.sleep(0.002)
-                    continue
+            while not stop_event.is_set():
+                time.sleep(0.5)
 
-                img_data, t = frame
-                w, h = img_data.get_size()
+            player.stop()
+            player.release()
+            instance.release()
 
-                if first:
-                    fmt = img_data.get_pixel_format()
-                    log.info(f"First frame: {w}x{h} fmt={fmt}")
-                    first = False
-                    cw = canvas.winfo_width() or cw
-                    ch = canvas.winfo_height() or ch
-                    scale = min(cw / w, ch / h)
-                    nw, nh = int(w * scale), int(h * scale)
-                    scale_size[0] = (nw, nh)
-
-                raw = img_data.to_bytearray()
-                raw_bytes = bytes(raw[0]) if isinstance(raw, (list, tuple)) else bytes(raw)
-                fmt = img_data.get_pixel_format()
-
-                # numpy быстрее PIL для конвертации сырых байт
-                arr = np.frombuffer(raw_bytes[:w*h*3], dtype=np.uint8).reshape((h, w, 3))
-                pil_img = PILImage.fromarray(arr, 'RGB')
-
-                if scale_size[0] and scale_size[0] != (w, h):
-                    pil_img = pil_img.resize(scale_size[0], PILImage.BILINEAR)
-
-                frame_queue.put((pil_img, val or 0.033))
-
-            except Exception as e:
-                log.error(f"decode: {e}")
-                time.sleep(0.033)
-
-        try:
-            player.close_player()
-        except Exception:
-            pass
-
-    def _render_loop():
-        if stop_event.is_set():
-            return
-        try:
-            pil_img, pts = frame_queue.get_nowait()
-            from PIL import ImageTk as PILImageTk
-            img = PILImageTk.PhotoImage(pil_img)
-            img_ref[0] = img
-            cw = canvas.winfo_width() or root.winfo_screenwidth()
-            ch = canvas.winfo_height() or root.winfo_screenheight()
-            if img_id[0] is None:
-                img_id[0] = canvas.create_image(cw // 2, ch // 2, anchor="center", image=img)
-            else:
-                canvas.itemconfig(img_id[0], image=img)
-                canvas.coords(img_id[0], cw // 2, ch // 2)
-            delay = max(1, int(pts * 1000))
-        except _queue.Empty:
-            delay = 10
         except Exception as e:
-            log.error(f"render: {e}")
-            delay = 33
-        root.after(delay, _render_loop)
+            log.error(f"VLC failed: {e}")
+            root.after(0, lambda: status_lbl.config(text=f"⚠️ VLC ошибка: {e}"))
 
-    decode_thread = threading.Thread(target=_decode_thread, daemon=True)
-    decode_thread.start()
+    threading.Thread(target=_start_vlc, daemon=True).start()
 
-
-    # ── Буферизация перед стартом рендера ────────────────────────────────────
-    first_frame_event = threading.Event()
-
-    def _watch_first_frame():
-        root.after(0, lambda: status_lbl.config(text="⏳ Буферизация..."))
-        # Ждём накопления BUFFER_PRELOAD кадров
-        while not stop_event.is_set():
-            size = frame_queue.qsize()
-            if size >= BUFFER_PRELOAD:
-                break
-            pct = int(size / BUFFER_PRELOAD * 100)
-            try:
-                root.after(0, lambda p=pct: status_lbl.config(text=f"⏳ Буферизация {p}%..."))
-            except Exception:
-                pass
-            time.sleep(0.1)
-
-        if stop_event.is_set():
-            return
-
-        root.after(0, lambda: status_lbl.config(text=""))
-        # Запускаем рендер
-        root.after(0, _render_loop)
-        first_frame_event.set()
-
-        # Запускаем таймер
-        if duration > 0:
+    # ── Таймер обязательного просмотра ──────────────────────────────────────
+    if duration > 0:
+        def countdown():
+            time.sleep(1)  # небольшая пауза для старта VLC
             for remaining in range(duration, 0, -1):
                 if stop_event.is_set():
                     return
@@ -629,11 +538,10 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
                 time.sleep(1)
             if not stop_event.is_set():
                 root.after(0, unlock_ui)
-        else:
-            if not lock:
-                root.after(0, unlock_ui)
-
-    threading.Thread(target=_watch_first_frame, daemon=True).start()
+        threading.Thread(target=countdown, daemon=True).start()
+    else:
+        if not lock:
+            root.after(1000, unlock_ui)
 
     root.mainloop()
 
