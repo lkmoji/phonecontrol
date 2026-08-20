@@ -541,7 +541,7 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
                 else:
                     pil_img = PILImage.frombytes("RGB", (w, h), raw_bytes[:w*h*3])
                 if nw != w or nh != h:
-                    pil_img = pil_img.resize((nw, nh), PILImage.NEAREST)
+                    pil_img = pil_img.resize((nw, nh), PILImage.LANCZOS)
 
                 pending_img[0] = (pil_img, cw, ch)
 
