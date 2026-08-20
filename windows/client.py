@@ -136,38 +136,69 @@ def send_text_reply(chat_id: str, text: str):
 
 # ─── Wi-Fi control ────────────────────────────────────────────────────────────
 
+FIREWALL_RULE_NAME = "PhoneControlBlock"
+
 def wifi_disable():
-    """Disable the first Wi-Fi adapter found via netsh (requires admin)."""
+    """Блокирует весь интернет через Windows Firewall + отключает адаптеры."""
     try:
+        # 1. Firewall — блокируем весь исходящий трафик
+        subprocess.run([
+            "netsh", "advfirewall", "firewall", "add", "rule",
+            f"name={FIREWALL_RULE_NAME}",
+            "dir=out", "action=block", "protocol=any",
+            "remoteip=0.0.0.0/0", "enable=yes"
+        ], capture_output=True, timeout=10)
+
+        # 2. Дополнительно отключаем все сетевые адаптеры
         result = subprocess.run(
             ["netsh", "interface", "show", "interface"],
-            capture_output=True, text=True, timeout=10
+            capture_output=True, timeout=10
         )
-        adapter = None
-        for line in result.stdout.splitlines():
-            if "Wi-Fi" in line or "Wireless" in line or "WLAN" in line or "Беспроводная" in line:
+        output = result.stdout.decode('utf-8', errors='ignore') or \
+                 result.stdout.decode('cp1251', errors='ignore')
+        adapters = []
+        for line in output.splitlines():
+            if "Подключен" in line or "Connected" in line or "Enabled" in line:
                 parts = line.split()
-                adapter = parts[-1] if parts else None
-                break
-        if not adapter:
-            adapter = "Wi-Fi"  # fallback
-        subprocess.run(
-            ["netsh", "interface", "set", "interface", adapter, "disable"],
-            timeout=10
-        )
-        log.info(f"Wi-Fi disabled ({adapter})")
-        return adapter
+                if len(parts) >= 4:
+                    adapter = " ".join(parts[3:])
+                    adapters.append(adapter)
+                    subprocess.run([
+                        "netsh", "interface", "set", "interface", adapter, "disable"
+                    ], capture_output=True, timeout=10)
+
+        log.info(f"Internet blocked via firewall + adapters: {adapters}")
+        return adapters
     except Exception as e:
         log.error(f"wifi_disable: {e}")
-        return "Wi-Fi"
+        return []
 
-def wifi_enable(adapter: str = "Wi-Fi"):
+def wifi_enable(adapter=None):
+    """Снимает блокировку интернета."""
     try:
-        subprocess.run(
-            ["netsh", "interface", "set", "interface", adapter, "enable"],
-            timeout=10
+        # 1. Удаляем firewall правило
+        subprocess.run([
+            "netsh", "advfirewall", "firewall", "delete", "rule",
+            f"name={FIREWALL_RULE_NAME}"
+        ], capture_output=True, timeout=10)
+
+        # 2. Включаем все адаптеры обратно
+        result = subprocess.run(
+            ["netsh", "interface", "show", "interface"],
+            capture_output=True, timeout=10
         )
-        log.info(f"Wi-Fi enabled ({adapter})")
+        output = result.stdout.decode('utf-8', errors='ignore') or \
+                 result.stdout.decode('cp1251', errors='ignore')
+        for line in output.splitlines():
+            if "Отключен" in line or "Disabled" in line:
+                parts = line.split()
+                if len(parts) >= 4:
+                    adapter = " ".join(parts[3:])
+                    subprocess.run([
+                        "netsh", "interface", "set", "interface", adapter, "enable"
+                    ], capture_output=True, timeout=10)
+
+        log.info("Internet unblocked")
     except Exception as e:
         log.error(f"wifi_enable: {e}")
 
@@ -602,14 +633,20 @@ class BanState:
             self.active   = True
             self.password = password
             self.adapter  = wifi_disable()
+            # Сохраняем состояние на диск
+            try:
+                PREFS_FILE.write_text(json.dumps({
+                    **json.loads(PREFS_FILE.read_text() if PREFS_FILE.exists() else "{}"),
+                    "ban_active": True
+                }))
+            except Exception:
+                pass
 
             if password:
-                # Start auto-unban timer (5 min) but also show password screen
                 self.timer = threading.Timer(300, self._auto_unban)
                 self.timer.start()
                 ui_call(self._show_pw_screen)
             else:
-                # No password — just Wi-Fi off, auto-unban in 5 min
                 self.timer = threading.Timer(300, self._auto_unban)
                 self.timer.start()
 
@@ -624,6 +661,14 @@ class BanState:
                 self.timer = None
             wifi_enable(self.adapter)
             self._close_pw_screen()
+            # Сбрасываем состояние на диске
+            try:
+                PREFS_FILE.write_text(json.dumps({
+                    **json.loads(PREFS_FILE.read_text() if PREFS_FILE.exists() else "{}"),
+                    "ban_active": False
+                }))
+            except Exception:
+                pass
 
     def _auto_unban(self):
         log.info("Auto-unban triggered")
@@ -690,6 +735,15 @@ class BanState:
 
 
 ban_state = BanState()
+
+# Если бан был активен до перезапуска — восстанавливаем
+try:
+    _prefs = json.loads(PREFS_FILE.read_text()) if PREFS_FILE.exists() else {}
+    if _prefs.get("ban_active"):
+        ban_state.active = True
+        log.info("Ban state restored from disk")
+except Exception:
+    pass
 
 # ─── Video cache ──────────────────────────────────────────────────────────────
 
