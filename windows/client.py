@@ -490,75 +490,122 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
         else:
             close_btn.pack()
 
-    # ── ffpyplayer + pygame — нативный рендер без PIL ─────────────────────────
-    # pygame рендерит в отдельном окне поверх tkinter
-    def _pygame_player():
+    # ── ffpyplayer + PIL — декодирование в потоке, рендер в главном ──────────
+    img_ref = [None]
+    img_id  = [None]
+    pending_img = [None]
+
+    def _decode_thread():
         try:
-            import pygame
             from ffpyplayer.player import MediaPlayer
+            from PIL import Image as PILImage
         except ImportError as e:
-            log.error(f"pygame/ffpyplayer not installed: {e}")
-            root.after(0, lambda: status_lbl.config(text="⚠️ pygame не установлен"))
+            log.error(f"ffpyplayer/PIL not installed: {e}")
+            root.after(0, lambda: status_lbl.config(text="⚠️ ffpyplayer не установлен"))
             return
 
-        # Получаем HWND canvas чтобы встроить pygame в него
-        import os
-        os.environ["SDL_WINDOWID"] = str(canvas.winfo_id())
-        os.environ["SDL_VIDEODRIVER"] = "windib"
-
-        pygame.init()
-        cw = canvas.winfo_width() or root.winfo_screenwidth()
-        ch = canvas.winfo_height() or (root.winfo_screenheight() - 80)
-        screen = pygame.display.set_mode((cw, ch), 0)
-        pygame.display.set_caption("")
-
         player = MediaPlayer(video_path, ff_opts={"loop": 0, "autoexit": False})
-        log.info(f"ffpyplayer+pygame started: {video_path}")
-        clock = pygame.time.Clock()
+        log.info(f"ffpyplayer started: {video_path}")
         first = True
+        cw = root.winfo_screenwidth()
+        ch = root.winfo_screenheight() - 80
 
         while not stop_event.is_set():
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    stop_event.set()
+            try:
+                frame, val = player.get_frame()
+                if val == "eof":
+                    player.seek(0, relative=False)
+                    continue
+                if frame is None:
+                    time.sleep(0.005)
+                    continue
 
-            frame, val = player.get_frame()
-            if val == "eof":
-                player.seek(0, relative=False)
-                continue
-            if frame is not None:
                 img_data, t = frame
                 w, h = img_data.get_size()
+
                 if first:
                     fmt = img_data.get_pixel_format()
                     log.info(f"First frame: {w}x{h} fmt={fmt}")
                     first = False
+                    cw = canvas.winfo_width() or cw
+                    ch = canvas.winfo_height() or ch
+
                 raw = img_data.to_bytearray()
                 raw_bytes = bytes(raw[0]) if isinstance(raw, (list, tuple)) else bytes(raw)
-                try:
-                    surf = pygame.image.frombuffer(raw_bytes, (w, h), "RGB")
-                    scaled = pygame.transform.smoothscale(surf, (cw, ch))
-                    screen.blit(scaled, (0, 0))
-                    pygame.display.flip()
-                except Exception as e:
-                    log.error(f"pygame render: {e}")
+                fmt = img_data.get_pixel_format()
+                if fmt == "rgba":
+                    pil_img = PILImage.frombytes("RGBA", (w, h), raw_bytes).convert("RGB")
+                else:
+                    pil_img = PILImage.frombytes("RGB", (w, h), raw_bytes[:w*h*3])
 
-            fps = player.get_pts() and 30 or 30
-            clock.tick(60)
+                scale = min(cw / w, ch / h)
+                nw, nh = int(w * scale), int(h * scale)
+                if nw != w or nh != h:
+                    pil_img = pil_img.resize((nw, nh), PILImage.BILINEAR)
+
+                pending_img[0] = (pil_img, cw, ch)
+
+                sleep = val if val and val != "eof" else 0.033
+                time.sleep(max(0, sleep))
+
+            except Exception as e:
+                log.error(f"decode: {e}")
+                time.sleep(0.033)
 
         try:
             player.close_player()
         except Exception:
             pass
-        pygame.quit()
 
-    threading.Thread(target=_pygame_player, daemon=True).start()
-    root.after(200, lambda: None)
+    def _render_loop():
+        if stop_event.is_set():
+            return
+        item = pending_img[0]
+        if item is not None:
+            pending_img[0] = None
+            pil_img, cw, ch = item
+            try:
+                from PIL import ImageTk as PILImageTk
+                img = PILImageTk.PhotoImage(pil_img)
+                img_ref[0] = img
+                if img_id[0] is None:
+                    img_id[0] = canvas.create_image(cw // 2, ch // 2, anchor="center", image=img)
+                else:
+                    canvas.itemconfig(img_id[0], image=img)
+                    canvas.coords(img_id[0], cw // 2, ch // 2)
+            except Exception as e:
+                log.error(f"render: {e}")
+        root.after(16, _render_loop)
+
+    threading.Thread(target=_decode_thread, daemon=True).start()
+    root.after(200, _render_loop)
 
 
-    # ── Duration countdown ────────────────────────────────────────────────────
-    if duration > 0:
-        def countdown():
+    # ── Duration countdown — стартует после первого кадра ────────────────────
+    first_frame_event = threading.Event()
+
+    # Патчим _decode_thread чтобы он сигналил после первого кадра
+    _orig_first = [True]
+    _orig_pending = pending_img  # уже определён выше
+
+    def _watch_first_frame():
+        """Ждём первый кадр, потом показываем загрузку и запускаем таймер."""
+        root.after(0, lambda: status_lbl.config(text="⏳ Загрузка видео..."))
+        # Ждём пока появится первый кадр (pending_img заполнится)
+        while not stop_event.is_set():
+            if pending_img[0] is not None:
+                first_frame_event.set()
+                break
+            time.sleep(0.05)
+
+        if stop_event.is_set():
+            return
+
+        # Небольшая пауза для буферизации
+        time.sleep(0.5)
+        root.after(0, lambda: status_lbl.config(text=""))
+
+        if duration > 0:
             for remaining in range(duration, 0, -1):
                 if stop_event.is_set():
                     return
@@ -570,10 +617,11 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
                 time.sleep(1)
             if not stop_event.is_set():
                 root.after(0, unlock_ui)
-        threading.Thread(target=countdown, daemon=True).start()
-    else:
-        if not lock:
-            root.after(500, unlock_ui)
+        else:
+            if not lock:
+                root.after(0, unlock_ui)
+
+    threading.Thread(target=_watch_first_frame, daemon=True).start()
 
     root.mainloop()
 
