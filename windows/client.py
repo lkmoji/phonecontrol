@@ -495,16 +495,25 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
 
     def _start_vlc():
         try:
-            import vlc
             import sys
+            import ctypes
 
-            # Указываем путь к плагинам через env var
+            # Явно загружаем libvlc.dll из _MEIPASS
             meipass = getattr(sys, '_MEIPASS', None)
             if meipass:
+                libvlc_path = os.path.join(meipass, 'libvlc.dll')
+                libvlccore_path = os.path.join(meipass, 'libvlccore.dll')
                 plugins_path = os.path.join(meipass, 'vlc_plugins')
+                log.info(f"Loading VLC from: {libvlc_path}")
+                log.info(f"libvlc exists: {os.path.exists(libvlc_path)}")
+                log.info(f"libvlccore exists: {os.path.exists(libvlccore_path)}")
+                log.info(f"plugins exists: {os.path.exists(plugins_path)}")
+                # Загружаем core первым
+                ctypes.CDLL(libvlccore_path)
+                ctypes.CDLL(libvlc_path)
                 os.environ['VLC_PLUGIN_PATH'] = plugins_path
-                log.info(f"VLC plugins path: {plugins_path}")
 
+            import vlc
             instance = vlc.Instance("--quiet", "--no-video-title-show")
             if instance is None:
                 raise RuntimeError("vlc.Instance() returned None")
