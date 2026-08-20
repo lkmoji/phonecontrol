@@ -502,6 +502,7 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
         try:
             from ffpyplayer.player import MediaPlayer
             from PIL import Image as PILImage
+            import numpy as np
         except ImportError as e:
             log.error(f"ffpyplayer/PIL not installed: {e}")
             root.after(0, lambda: status_lbl.config(text="⚠️ ffpyplayer не установлен"))
@@ -512,12 +513,12 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
         first = True
         cw = root.winfo_screenwidth()
         ch = root.winfo_screenheight() - 80
+        scale_size = [None]  # вычисляем один раз
 
         while not stop_event.is_set():
             try:
-                # Если буфер полон — ждём чтобы не жрать память
                 if frame_queue.full():
-                    time.sleep(0.01)
+                    time.sleep(0.005)
                     continue
 
                 frame, val = player.get_frame()
@@ -525,7 +526,7 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
                     player.seek(0, relative=False)
                     continue
                 if frame is None:
-                    time.sleep(0.005)
+                    time.sleep(0.002)
                     continue
 
                 img_data, t = frame
@@ -537,21 +538,21 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
                     first = False
                     cw = canvas.winfo_width() or cw
                     ch = canvas.winfo_height() or ch
+                    scale = min(cw / w, ch / h)
+                    nw, nh = int(w * scale), int(h * scale)
+                    scale_size[0] = (nw, nh)
 
                 raw = img_data.to_bytearray()
                 raw_bytes = bytes(raw[0]) if isinstance(raw, (list, tuple)) else bytes(raw)
                 fmt = img_data.get_pixel_format()
-                if fmt == "rgba":
-                    pil_img = PILImage.frombytes("RGBA", (w, h), raw_bytes).convert("RGB")
-                else:
-                    pil_img = PILImage.frombytes("RGB", (w, h), raw_bytes[:w*h*3])
 
-                scale = min(cw / w, ch / h)
-                nw, nh = int(w * scale), int(h * scale)
-                if nw != w or nh != h:
-                    pil_img = pil_img.resize((nw, nh), PILImage.BILINEAR)
+                # numpy быстрее PIL для конвертации сырых байт
+                arr = np.frombuffer(raw_bytes[:w*h*3], dtype=np.uint8).reshape((h, w, 3))
+                pil_img = PILImage.fromarray(arr, 'RGB')
 
-                # pts — время кадра в секундах, используем для синхронизации
+                if scale_size[0] and scale_size[0] != (w, h):
+                    pil_img = pil_img.resize(scale_size[0], PILImage.BILINEAR)
+
                 frame_queue.put((pil_img, val or 0.033))
 
             except Exception as e:
