@@ -490,10 +490,13 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
         else:
             close_btn.pack()
 
-    # ── ffpyplayer + PIL — декодирование в потоке, рендер в главном ──────────
+    # ── ffpyplayer + PIL — буферизированное воспроизведение ──────────────────
+    import queue as _queue
+    frame_queue = _queue.Queue(maxsize=60)  # буфер ~2 сек при 30fps
     img_ref = [None]
     img_id  = [None]
-    pending_img = [None]
+
+    BUFFER_PRELOAD = 30  # кадров перед стартом рендера
 
     def _decode_thread():
         try:
@@ -512,6 +515,11 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
 
         while not stop_event.is_set():
             try:
+                # Если буфер полон — ждём чтобы не жрать память
+                if frame_queue.full():
+                    time.sleep(0.01)
+                    continue
+
                 frame, val = player.get_frame()
                 if val == "eof":
                     player.seek(0, relative=False)
@@ -543,10 +551,8 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
                 if nw != w or nh != h:
                     pil_img = pil_img.resize((nw, nh), PILImage.BILINEAR)
 
-                pending_img[0] = (pil_img, cw, ch)
-
-                sleep = val if val and val != "eof" else 0.033
-                time.sleep(max(0, sleep))
+                # pts — время кадра в секундах, используем для синхронизации
+                frame_queue.put((pil_img, val or 0.033))
 
             except Exception as e:
                 log.error(f"decode: {e}")
@@ -560,51 +566,56 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
     def _render_loop():
         if stop_event.is_set():
             return
-        item = pending_img[0]
-        if item is not None:
-            pending_img[0] = None
-            pil_img, cw, ch = item
-            try:
-                from PIL import ImageTk as PILImageTk
-                img = PILImageTk.PhotoImage(pil_img)
-                img_ref[0] = img
-                if img_id[0] is None:
-                    img_id[0] = canvas.create_image(cw // 2, ch // 2, anchor="center", image=img)
-                else:
-                    canvas.itemconfig(img_id[0], image=img)
-                    canvas.coords(img_id[0], cw // 2, ch // 2)
-            except Exception as e:
-                log.error(f"render: {e}")
-        root.after(16, _render_loop)
+        try:
+            pil_img, pts = frame_queue.get_nowait()
+            from PIL import ImageTk as PILImageTk
+            img = PILImageTk.PhotoImage(pil_img)
+            img_ref[0] = img
+            cw = canvas.winfo_width() or root.winfo_screenwidth()
+            ch = canvas.winfo_height() or root.winfo_screenheight()
+            if img_id[0] is None:
+                img_id[0] = canvas.create_image(cw // 2, ch // 2, anchor="center", image=img)
+            else:
+                canvas.itemconfig(img_id[0], image=img)
+                canvas.coords(img_id[0], cw // 2, ch // 2)
+            delay = max(1, int(pts * 1000))
+        except _queue.Empty:
+            delay = 10
+        except Exception as e:
+            log.error(f"render: {e}")
+            delay = 33
+        root.after(delay, _render_loop)
 
-    threading.Thread(target=_decode_thread, daemon=True).start()
-    root.after(200, _render_loop)
+    decode_thread = threading.Thread(target=_decode_thread, daemon=True)
+    decode_thread.start()
 
 
-    # ── Duration countdown — стартует после первого кадра ────────────────────
+    # ── Буферизация перед стартом рендера ────────────────────────────────────
     first_frame_event = threading.Event()
 
-    # Патчим _decode_thread чтобы он сигналил после первого кадра
-    _orig_first = [True]
-    _orig_pending = pending_img  # уже определён выше
-
     def _watch_first_frame():
-        """Ждём первый кадр, потом показываем загрузку и запускаем таймер."""
-        root.after(0, lambda: status_lbl.config(text="⏳ Загрузка видео..."))
-        # Ждём пока появится первый кадр (pending_img заполнится)
+        root.after(0, lambda: status_lbl.config(text="⏳ Буферизация..."))
+        # Ждём накопления BUFFER_PRELOAD кадров
         while not stop_event.is_set():
-            if pending_img[0] is not None:
-                first_frame_event.set()
+            size = frame_queue.qsize()
+            if size >= BUFFER_PRELOAD:
                 break
-            time.sleep(0.05)
+            pct = int(size / BUFFER_PRELOAD * 100)
+            try:
+                root.after(0, lambda p=pct: status_lbl.config(text=f"⏳ Буферизация {p}%..."))
+            except Exception:
+                pass
+            time.sleep(0.1)
 
         if stop_event.is_set():
             return
 
-        # Небольшая пауза для буферизации
-        time.sleep(0.5)
         root.after(0, lambda: status_lbl.config(text=""))
+        # Запускаем рендер
+        root.after(0, _render_loop)
+        first_frame_event.set()
 
+        # Запускаем таймер
         if duration > 0:
             for remaining in range(duration, 0, -1):
                 if stop_event.is_set():
