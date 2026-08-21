@@ -390,43 +390,141 @@ from PIL import Image, ImageTk
 _video_window = None
 _video_stop   = threading.Event()
 
+# ── Chrome-based video player ────────────────────────────────────────────────
+
+_chrome_proc    = None
+_kbd_hook       = None
+_video_stop     = threading.Event()
+_video_window   = None  # tkinter overlay для кнопок поверх Chrome
+
+def _block_alttab(enable: bool):
+    """Устанавливает/снимает low-level keyboard hook блокирующий Alt+Tab."""
+    import ctypes
+    import ctypes.wintypes
+
+    WH_KEYBOARD_LL = 13
+    WM_KEYDOWN     = 0x0100
+    WM_SYSKEYDOWN  = 0x0104
+    VK_TAB         = 0x09
+    VK_ESCAPE      = 0x1B
+    VK_F4          = 0x73
+
+    global _kbd_hook
+    user32 = ctypes.windll.user32
+
+    if not enable:
+        if _kbd_hook:
+            user32.UnhookWindowsHookEx(_kbd_hook)
+            _kbd_hook = None
+        return
+
+    HOOKPROC = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_int, ctypes.wintypes.WPARAM, ctypes.wintypes.LPARAM)
+
+    def hook_proc(nCode, wParam, lParam):
+        if nCode >= 0 and wParam in (WM_KEYDOWN, WM_SYSKEYDOWN):
+            vk = ctypes.cast(lParam, ctypes.POINTER(ctypes.c_ulong))[0]
+            # Блокируем Alt+Tab, Alt+F4, Escape
+            if vk in (VK_TAB, VK_F4, VK_ESCAPE):
+                return 1
+        return user32.CallNextHookEx(None, nCode, wParam, lParam)
+
+    _hook_fn = HOOKPROC(hook_proc)
+    _kbd_hook = user32.SetWindowsHookExW(WH_KEYBOARD_LL, _hook_fn, None, 0)
+    # Держим ссылку чтобы GC не удалил
+    _block_alttab._fn = _hook_fn
+    log.info(f"Keyboard hook set: {_kbd_hook}")
+
+
+def _find_chrome() -> str:
+    """Ищет путь к Chrome."""
+    paths = [
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
+    ]
+    for p in paths:
+        if os.path.exists(p):
+            return p
+    return "chrome.exe"  # fallback — если в PATH
+
+
+def _make_video_html(video_path: str) -> str:
+    """Создаёт временный HTML файл с видео-плеером."""
+    import tempfile
+    # Конвертируем путь в file:// URL
+    file_url = "file:///" + video_path.replace(chr(92), "/")
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+  body {{ background: #000; width: 100vw; height: 100vh; overflow: hidden; }}
+  video {{ width: 100%; height: 100%; object-fit: contain; }}
+</style>
+</head>
+<body>
+<video autoplay loop>
+  <source src="{file_url}" type="video/mp4">
+</video>
+</body>
+</html>"""
+    tmp = tempfile.NamedTemporaryFile(suffix=".html", delete=False, mode='w', encoding='utf-8')
+    tmp.write(html)
+    tmp.close()
+    return tmp.name
+
+
 def show_video_overlay(video_path: str, lock: bool, duration: int,
                         fb_mode: str, reply_prompt: str, survey: list,
                         chat_id: str):
-    global _video_window, _video_stop
+    global _chrome_proc, _video_stop, _video_window
 
     _video_stop = threading.Event()
     stop_event  = _video_stop
 
-    root = make_fullscreen_root("#000000")
+    # Создаём HTML страницу с видео
+    html_path = _make_video_html(video_path)
+
+    # Запускаем Chrome в киоск-режиме
+    chrome = _find_chrome()
+    _chrome_proc = subprocess.Popen([
+        chrome,
+        "--kiosk",
+        "--no-first-run",
+        "--disable-infobars",
+        "--autoplay-policy=no-user-gesture-required",
+        f"file:///{html_path.replace(chr(92), chr(47))}",
+    ])
+    log.info(f"Chrome started for video: {video_path}")
+
+    # Блокируем Alt+Tab если lock=True
+    if lock:
+        _block_alttab(True)
+
+    answers  = []
+    q_index  = [0]
+
+    # Создаём прозрачное поверх Chrome окно с кнопками
+    root = tk.Tk()
+    root.overrideredirect(True)
+    root.attributes("-topmost", True)
+    root.attributes("-alpha", 0.0)  # полностью прозрачное
+    root.geometry(f"{root.winfo_screenwidth()}x{root.winfo_screenheight()}+0+0")
+    root.configure(bg="black")
     _video_window = root
 
-    def _keep_on_top():
-        while not stop_event.is_set():
-            time.sleep(2)
-            if stop_event.is_set():
-                break
-            try:
-                if not root.winfo_exists():
-                    break
-                root.attributes("-topmost", True)
-                root.lift()
-            except Exception:
-                break
-    threading.Thread(target=_keep_on_top, daemon=True).start()
-
-    answers = []
-    q_index = [0]
-
-    canvas = tk.Canvas(root, bg="black", highlightthickness=0)
-    canvas.pack(fill="both", expand=True)
-
+    # Нижняя панель с кнопками — непрозрачная
     bottom = tk.Frame(root, bg="#111111")
-    bottom.pack(side="bottom", fill="x", pady=10)
+    bottom.place(relx=0, rely=1.0, anchor="sw", relwidth=1.0)
+    root.attributes("-alpha", 1.0)
+    # Делаем окно прозрачным кроме нижней панели через layered window
+    # Используем цветовой ключ для прозрачности
+    root.attributes("-transparentcolor", "black")
 
     status_lbl = tk.Label(bottom, text="", bg="#111111", fg="#888",
                            font=("Segoe UI", 12))
-    status_lbl.pack()
+    status_lbl.pack(pady=(8, 0))
 
     input_frame = tk.Frame(bottom, bg="#111111")
     entry       = tk.Entry(input_frame, font=("Segoe UI", 13), width=50,
@@ -443,12 +541,19 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
 
     def do_close():
         stop_event.set()
-        global _video_window
-        _video_window = None
+        _block_alttab(False)
+        if _chrome_proc:
+            try:
+                _chrome_proc.terminate()
+            except Exception:
+                pass
         try:
-            root.after(0, root.destroy)
+            os.unlink(html_path)
         except Exception:
             pass
+        global _video_window
+        _video_window = None
+        root.after(0, root.destroy)
 
     def do_send():
         answer = entry.get().strip()
@@ -488,73 +593,26 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
             input_frame.pack(pady=(0, 10))
             entry.focus_set()
         else:
-            close_btn.pack()
+            close_btn.pack(pady=(0, 10))
 
-    # ── VLC встроенный в canvas через HWND — нативный рендер ─────────────────
-    vlc_holder = [None]
+    # keep on top
+    def _keep_on_top():
+        while not stop_event.is_set():
+            time.sleep(2)
+            if stop_event.is_set():
+                break
+            try:
+                if root.winfo_exists():
+                    root.attributes("-topmost", True)
+                    root.lift()
+            except Exception:
+                break
+    threading.Thread(target=_keep_on_top, daemon=True).start()
 
-    def _start_vlc():
-        try:
-            import sys
-            import ctypes
-
-            meipass = getattr(sys, '_MEIPASS', None)
-            if meipass:
-                libvlc_path = os.path.join(meipass, 'libvlc.dll')
-                libvlccore_path = os.path.join(meipass, 'libvlccore.dll')
-                plugins_path = os.path.join(meipass, 'vlc_plugins')
-
-                # Добавляем папку с dll в PATH чтобы python-vlc нашёл их
-                os.environ['PATH'] = meipass + os.pathsep + os.environ.get('PATH', '')
-                os.environ['VLC_PLUGIN_PATH'] = plugins_path
-                os.environ['PYTHON_VLC_LIB_PATH'] = libvlc_path
-
-                # Загружаем dll явно
-                ctypes.CDLL(libvlccore_path)
-                ctypes.CDLL(libvlc_path)
-
-                log.info(f"VLC dll loaded from {meipass}")
-
-            import vlc
-            # Принудительно указываем путь к dll в модуле vlc
-            if meipass and not vlc.dll:
-                vlc.dll = ctypes.CDLL(os.path.join(meipass, 'libvlc.dll'))
-                log.info("vlc.dll set manually")
-
-            instance = vlc.Instance("--quiet", "--no-video-title-show")
-            if instance is None:
-                raise RuntimeError("vlc.Instance() returned None")
-
-            player = instance.media_player_new()
-            media = instance.media_new(video_path)
-            media.add_option("input-repeat=65535")  # зациклить
-            player.set_media(media)
-
-            # Встраиваем в HWND canvas
-            hwnd = canvas.winfo_id()
-            player.set_hwnd(hwnd)
-
-            player.play()
-            vlc_holder[0] = player
-            log.info(f"VLC started: {video_path}")
-
-            while not stop_event.is_set():
-                time.sleep(0.5)
-
-            player.stop()
-            player.release()
-            instance.release()
-
-        except Exception as e:
-            log.error(f"VLC failed: {e}")
-            root.after(0, lambda: status_lbl.config(text=f"⚠️ VLC ошибка: {e}"))
-
-    threading.Thread(target=_start_vlc, daemon=True).start()
-
-    # ── Таймер обязательного просмотра ──────────────────────────────────────
+    # Таймер
     if duration > 0:
         def countdown():
-            time.sleep(1)  # небольшая пауза для старта VLC
+            time.sleep(1)
             for remaining in range(duration, 0, -1):
                 if stop_event.is_set():
                     return
@@ -569,21 +627,26 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
         threading.Thread(target=countdown, daemon=True).start()
     else:
         if not lock:
-            root.after(1000, unlock_ui)
+            root.after(500, unlock_ui)
 
     root.mainloop()
+
 
 def unban_video():
     global _video_window
     if _video_window:
         try:
             _video_stop.set()
+            _block_alttab(False)
+            if _chrome_proc:
+                _chrome_proc.terminate()
             _video_window.after(0, _video_window.destroy)
             _video_window = None
         except Exception as e:
             log.error(f"unban_video: {e}")
 
 # ─── File picker ─────────────────────────────────────────────────────────────
+
 
 def open_file_picker(chat_id: str):
     """Open file dialog and upload selected file to server."""
