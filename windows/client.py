@@ -464,7 +464,7 @@ def _make_video_html(video_path: str) -> str:
 </style>
 </head>
 <body>
-<video autoplay loop>
+<video autoplay loop muted playsinline>
   <source src="{file_url}" type="video/mp4">
 </video>
 </body>
@@ -494,6 +494,11 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
         "--no-first-run",
         "--disable-infobars",
         "--autoplay-policy=no-user-gesture-required",
+        "--allow-file-access-from-files",
+        "--disable-web-security",
+        "--disable-features=AutoupgradeMixedContent",
+        "--disable-popup-blocking",
+        "--start-maximized",
         f"file:///{html_path.replace(chr(92), chr(47))}",
     ])
     log.info(f"Chrome started for video: {video_path}")
