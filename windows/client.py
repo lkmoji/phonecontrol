@@ -397,73 +397,109 @@ _kbd_hook       = None
 _video_stop     = threading.Event()
 _video_window   = None  # tkinter overlay для кнопок поверх Chrome
 
+_kbd_hook_thread = None
+
 def _block_alttab(enable: bool):
-    """Устанавливает/снимает low-level keyboard hook, блокирующий все способы выйти из Chrome."""
+    """Устанавливает/снимает low-level keyboard hook через отдельный поток с message loop."""
+    global _kbd_hook, _kbd_hook_thread
     import ctypes
     import ctypes.wintypes
 
-    WH_KEYBOARD_LL = 13
-    WM_KEYDOWN     = 0x0100
-    WM_SYSKEYDOWN  = 0x0104
-    WM_KEYUP       = 0x0101
-    WM_SYSKEYUP    = 0x0105
-
-    # Виртуальные коды клавиш
-    VK_TAB         = 0x09
-    VK_ESCAPE      = 0x1B
-    VK_F4          = 0x73
-    VK_F11         = 0x7A
-    VK_LWIN        = 0x5B
-    VK_RWIN        = 0x5C
-    VK_D           = 0x44   # Win+D (свернуть всё)
-    VK_T           = 0x54   # Ctrl+T (новая вкладка)
-    VK_W           = 0x57   # Ctrl+W (закрыть вкладку)
-    VK_N           = 0x4E   # Ctrl+N (новое окно)
-    VK_L           = 0x4C   # Ctrl+L (адресная строка)
-    VK_F           = 0x46   # Ctrl+F (поиск)
-
-    # Полный список блокируемых VK
-    BLOCKED_VK = {VK_TAB, VK_ESCAPE, VK_F4, VK_F11,
-                  VK_LWIN, VK_RWIN,
-                  VK_D, VK_T, VK_W, VK_N, VK_L, VK_F}
-
-    global _kbd_hook
-    user32 = ctypes.windll.user32
-
     if not enable:
         if _kbd_hook:
-            user32.UnhookWindowsHookEx(_kbd_hook)
+            # Посылаем WM_QUIT в поток хука чтобы он завершил message loop
+            ctypes.windll.user32.PostThreadMessageW(
+                _kbd_hook_thread.ident if _kbd_hook_thread else 0,
+                0x0012, 0, 0  # WM_QUIT
+            )
             _kbd_hook = None
         return
 
-    HOOKPROC = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_int, ctypes.wintypes.WPARAM, ctypes.wintypes.LPARAM)
+    stop_evt = threading.Event()
 
-    def hook_proc(nCode, wParam, lParam):
-        if nCode >= 0 and wParam in (WM_KEYDOWN, WM_SYSKEYDOWN, WM_KEYUP, WM_SYSKEYUP):
-            vk = ctypes.cast(lParam, ctypes.POINTER(ctypes.c_ulong))[0]
-            if vk in BLOCKED_VK:
-                return 1  # блокируем — не передаём дальше
-        return user32.CallNextHookEx(None, nCode, wParam, lParam)
+    def _hook_thread():
+        global _kbd_hook
+        import ctypes
+        import ctypes.wintypes
 
-    _hook_fn = HOOKPROC(hook_proc)
-    _kbd_hook = user32.SetWindowsHookExW(WH_KEYBOARD_LL, _hook_fn, None, 0)
-    # Держим ссылку чтобы GC не удалил
-    _block_alttab._fn = _hook_fn
+        WH_KEYBOARD_LL = 13
+        WM_KEYDOWN     = 0x0100
+        WM_SYSKEYDOWN  = 0x0104
+        WM_KEYUP       = 0x0101
+        WM_SYSKEYUP    = 0x0105
 
-    # Дополнительно: отключаем кнопку Win через реестр (TaskbarNoWinKey)
-    try:
-        import winreg
-        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
-                             r"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer",
-                             0, winreg.KEY_SET_VALUE)
-        winreg.SetValueEx(key, "NoWinKeys", 0, winreg.REG_DWORD, 1)
-        winreg.CloseKey(key)
-        # Применяем немедленно
-        ctypes.windll.user32.SendMessageW(0xFFFF, 0x001A, 0, "Policy")
-    except Exception as e:
-        log.warning(f"Registry WinKey block failed: {e}")
+        BLOCKED_VK = {
+            0x09,  # Tab       (Alt+Tab)
+            0x1B,  # Escape
+            0x73,  # F4        (Alt+F4)
+            0x7A,  # F11
+            0x5B,  # LWin
+            0x5C,  # RWin
+            0x44,  # D         (Win+D)
+            0x54,  # T         (Ctrl+T)
+            0x57,  # W         (Ctrl+W)
+            0x4E,  # N         (Ctrl+N)
+            0x4C,  # L         (Ctrl+L / адресная строка)
+            0x46,  # F         (Ctrl+F)
+            0x52,  # R         (Ctrl+R / reload)
+        }
 
-    log.info(f"Keyboard hook set: {_kbd_hook}")
+        user32 = ctypes.windll.user32
+        HOOKPROC = ctypes.WINFUNCTYPE(
+            ctypes.c_long, ctypes.c_int,
+            ctypes.wintypes.WPARAM, ctypes.wintypes.LPARAM
+        )
+
+        def hook_proc(nCode, wParam, lParam):
+            if nCode >= 0 and wParam in (WM_KEYDOWN, WM_SYSKEYDOWN,
+                                          WM_KEYUP,   WM_SYSKEYUP):
+                vk = ctypes.cast(lParam, ctypes.POINTER(ctypes.c_ulong))[0]
+                if vk in BLOCKED_VK:
+                    return 1
+            return user32.CallNextHookEx(None, nCode, wParam, lParam)
+
+        _hook_cb = HOOKPROC(hook_proc)
+        hHook = user32.SetWindowsHookExW(WH_KEYBOARD_LL, _hook_cb, None, 0)
+        _kbd_hook = hHook
+        log.info(f"Keyboard hook set in dedicated thread: {hHook}")
+        stop_evt.set()  # сигнализируем что hook установлен
+
+        # Блокируем Win через реестр
+        try:
+            import winreg
+            k = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                               r"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer",
+                               0, winreg.KEY_SET_VALUE)
+            winreg.SetValueEx(k, "NoWinKeys", 0, winreg.REG_DWORD, 1)
+            winreg.CloseKey(k)
+            user32.SendMessageW(0xFFFF, 0x001A, 0, "Policy")
+        except Exception as e:
+            log.warning(f"Registry WinKey block failed: {e}")
+
+        # Message loop — обязателен чтобы hook работал
+        msg = ctypes.wintypes.MSG()
+        while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+            user32.TranslateMessage(ctypes.byref(msg))
+            user32.DispatchMessageW(ctypes.byref(msg))
+
+        # Снимаем hook при выходе из loop
+        user32.UnhookWindowsHookEx(hHook)
+        # Восстанавливаем Win-клавишу
+        try:
+            import winreg
+            k = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                               r"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer",
+                               0, winreg.KEY_SET_VALUE)
+            winreg.SetValueEx(k, "NoWinKeys", 0, winreg.REG_DWORD, 0)
+            winreg.CloseKey(k)
+            user32.SendMessageW(0xFFFF, 0x001A, 0, "Policy")
+        except Exception:
+            pass
+        log.info("Keyboard hook removed")
+
+    _kbd_hook_thread = threading.Thread(target=_hook_thread, daemon=True)
+    _kbd_hook_thread.start()
+    stop_evt.wait(timeout=2)  # ждём пока hook реально установлен
 
 
 def _find_chrome() -> str:
@@ -571,19 +607,29 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
     # Создаём HTML страницу с видео
     html_path = _make_video_html(video_path, duration)
 
-    # Запускаем Chrome в киоск-режиме
+    # Убиваем все запущенные Chrome — иначе kiosk и флаги не применятся
+    subprocess.run(["taskkill", "/f", "/im", "chrome.exe"],
+                   capture_output=True, timeout=5)
+    time.sleep(0.8)
+
+    # Изолированный профиль чтобы Chrome точно стартовал чистым процессом
+    import tempfile as _tf
+    chrome_profile = _tf.mkdtemp(prefix="pc_chrome_")
+
     chrome = _find_chrome()
     _chrome_proc = subprocess.Popen([
         chrome,
         "--kiosk",
         "--no-first-run",
         "--disable-infobars",
+        "--disable-session-crashed-bubble",
+        "--disable-features=TranslateUI",
+        "--noerrdialogs",
         "--autoplay-policy=no-user-gesture-required",
         "--allow-file-access-from-files",
         "--disable-web-security",
-        "--disable-features=AutoupgradeMixedContent",
         "--disable-popup-blocking",
-        "--start-maximized",
+        f"--user-data-dir={chrome_profile}",
         f"file:///{html_path.replace(chr(92), chr(47))}",
     ])
     log.info(f"Chrome started for video: {video_path}")
@@ -632,23 +678,22 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
     def do_close():
         stop_event.set()
         _block_alttab(False)
-        # Восстанавливаем Win-клавишу в реестре
-        try:
-            import winreg
-            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
-                                 r"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer",
-                                 0, winreg.KEY_SET_VALUE)
-            winreg.SetValueEx(key, "NoWinKeys", 0, winreg.REG_DWORD, 0)
-            winreg.CloseKey(key)
-        except Exception:
-            pass
         if _chrome_proc:
             try:
                 _chrome_proc.terminate()
             except Exception:
                 pass
+        # Убиваем Chrome полностью (могут остаться дочерние процессы)
+        subprocess.run(["taskkill", "/f", "/im", "chrome.exe"],
+                       capture_output=True, timeout=5)
         try:
             os.unlink(html_path)
+        except Exception:
+            pass
+        # Чистим временный профиль
+        try:
+            import shutil
+            shutil.rmtree(chrome_profile, ignore_errors=True)
         except Exception:
             pass
         global _video_window
@@ -738,18 +783,10 @@ def unban_video():
         try:
             _video_stop.set()
             _block_alttab(False)
-            # Восстанавливаем Win-клавишу
-            try:
-                import winreg
-                key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
-                                     r"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer",
-                                     0, winreg.KEY_SET_VALUE)
-                winreg.SetValueEx(key, "NoWinKeys", 0, winreg.REG_DWORD, 0)
-                winreg.CloseKey(key)
-            except Exception:
-                pass
             if _chrome_proc:
                 _chrome_proc.terminate()
+            subprocess.run(["taskkill", "/f", "/im", "chrome.exe"],
+                           capture_output=True, timeout=5)
             _video_window.after(0, _video_window.destroy)
             _video_window = None
         except Exception as e:
