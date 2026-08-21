@@ -11,8 +11,8 @@ android {
         applicationId "com.phonecontrol"
         minSdk 26
         targetSdk 34
-        versionCode 2
-        versionName "1.1"
+        versionCode 3
+        versionName "1.2"
 
         buildConfigField "String", "SERVER_URL", "\"https://phonecontrol-2tkw.onrender.com\""
         buildConfigField "String", "DEVICE_SECRET", "\"mysecret42\""
@@ -36,6 +36,12 @@ android {
     kotlinOptions {
         jvmTarget = '1.8'
     }
+
+    packaging {
+        resources {
+            excludes += ['META-INF/INDEX.LIST', 'META-INF/DEPENDENCIES']
+        }
+    }
 }
 
 dependencies {
@@ -44,6 +50,9 @@ dependencies {
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'
     implementation 'com.squareup.okhttp3:okhttp:4.12.0'
 
-    // WorkManager — живёт даже когда система убивает обычные сервисы
+    // WorkManager
     implementation 'androidx.work:work-runtime-ktx:2.9.0'
+
+    // NanoHTTPD — встроенный HTTP сервер для MJPEG стрима
+    implementation 'org.nanohttpd:nanohttpd:2.3.1'
 }
