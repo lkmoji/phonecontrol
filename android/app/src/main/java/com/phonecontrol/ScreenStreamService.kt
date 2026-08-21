@@ -38,8 +38,8 @@ class ScreenStreamService : Service() {
         var streamUrl = ""
 
         // Храним MediaProjection токен между запусками стрима
-        private var savedResultCode: Int = 0
-        private var savedResultData: Intent? = null
+        var savedResultCode: Int = 0
+        var savedResultData: Intent? = null
 
         fun hasSavedProjection() = savedResultData != null
         fun saveProjection(code: Int, data: Intent) {
@@ -194,10 +194,10 @@ class ScreenStreamService : Service() {
 
 // ── MJPEG HTTP сервер ─────────────────────────────────────────────────────────
 class MjpegServer(
-    port: Int,
+    private val httpPort: Int,
     private val frame: AtomicReference<ByteArray>,
     private val ctx: Context
-) : NanoHTTPD(port) {
+) : NanoHTTPD(httpPort) {
 
     override fun serve(session: IHTTPSession): Response {
         return when (session.uri) {
@@ -395,7 +395,8 @@ class TouchWsServer(port: Int, private val ctx: Context) {
                 if (len == 126) len = (input.read() shl 8) or input.read()
                 val mask = if (masked) ByteArray(4) { input.read().toByte() } else ByteArray(4)
                 val data = ByteArray(len) { i ->
-                    (input.read().toByte() xor if (masked) mask[i % 4] else 0).toByte()
+                    val b = input.read().toByte()
+                    if (masked) (b.toInt() xor mask[i % 4].toInt()).toByte() else b
                 }
                 val msg = String(data)
                 handleMessage(JSONObject(msg))
