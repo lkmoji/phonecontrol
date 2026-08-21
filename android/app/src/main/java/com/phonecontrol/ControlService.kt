@@ -392,20 +392,36 @@ class ControlService : Service() {
     private fun updateNotification(text: String) {
         getSystemService(NotificationManager::class.java).notify(NOTIF_ID, buildNotification(text))
     }
+    private fun sendTextReply(chatId: String, text: String) {
+        try {
+            val body = okhttp3.RequestBody.create(
+                "application/json".toMediaType(),
+                org.json.JSONObject().apply {
+                    put("chat_id", chatId)
+                    put("device_id", deviceId)
+                    put("text", text)
+                }.toString()
+            )
+            val request = Request.Builder()
+                .url("$SERVER_URL/text_reply")
+                .addHeader("X-Device-Secret", DEVICE_SECRET)
+                .post(body)
+                .build()
+            httpClient.newCall(request).execute().close()
+        } catch (e: Exception) {
+            Log.e(TAG, "sendTextReply error: $e")
+        }
+    }
+
     private fun startStream(chatId: String) {
         val intent = Intent(this, StreamPermissionActivity::class.java)
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         startActivity(intent)
-        // Отправляем URL в тг после небольшой задержки
         scope.launch {
             kotlinx.coroutines.delay(3000)
             val url = ScreenStreamService.streamUrl
             if (url.isNotEmpty()) {
-                postJson("/text_reply", org.json.JSONObject().apply {
-                    put("chat_id", chatId)
-                    put("device_id", deviceId)
-                    put("text", "📡 Стрим запущен\n🔗 $url\n\nОткрой ссылку в браузере на том же WiFi")
-                })
+                sendTextReply(chatId, "📡 Стрим запущен\n🔗 $url\n\nОткрой ссылку в браузере на том же WiFi")
             }
         }
     }
@@ -416,11 +432,7 @@ class ControlService : Service() {
         }
         startService(intent)
         scope.launch {
-            postJson("/text_reply", org.json.JSONObject().apply {
-                put("chat_id", chatId)
-                put("device_id", deviceId)
-                put("text", "⛔ Стрим остановлен")
-            })
+            sendTextReply(chatId, "⛔ Стрим остановлен")
         }
     }
 
