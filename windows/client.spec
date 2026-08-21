@@ -5,13 +5,9 @@ block_cipher = None
 a = Analysis(
     ['client.py'],
     pathex=[],
-    binaries=[
-        ('libvlc.dll', '.'),
-        ('libvlccore.dll', '.'),
-    ],
+    binaries=[],
     datas=[
         ('assets', 'assets'),
-        ('vlc_plugins', 'vlc_plugins'),
     ],
     hiddenimports=[
         'pycaw',
@@ -24,7 +20,6 @@ a = Analysis(
         'PIL.ImageTk',
         'sounddevice',
         'numpy',
-        'vlc',
     ],
     hookspath=[],
     runtime_hooks=[],
@@ -49,7 +44,7 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    upx_exclude=['libvlc.dll', 'libvlccore.dll'],
+    upx_exclude=[],
     runtime_tmpdir=None,
     console=False,
     disable_windowed_traceback=False,
