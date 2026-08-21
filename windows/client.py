@@ -402,57 +402,49 @@ _kbd_hook_thread = None
 def _block_alttab(enable: bool):
     """Устанавливает/снимает low-level keyboard hook через отдельный поток с message loop."""
     global _kbd_hook, _kbd_hook_thread
-    import ctypes
-    import ctypes.wintypes
 
     if not enable:
-        if _kbd_hook:
-            # Посылаем WM_QUIT в поток хука чтобы он завершил message loop
+        # Посылаем WM_QUIT в поток чтобы он завершил GetMessage loop
+        if _kbd_hook_thread and _kbd_hook_thread.is_alive():
+            import ctypes
             ctypes.windll.user32.PostThreadMessageW(
-                _kbd_hook_thread.ident if _kbd_hook_thread else 0,
-                0x0012, 0, 0  # WM_QUIT
+                _kbd_hook_thread.ident, 0x0012, 0, 0  # WM_QUIT
             )
-            _kbd_hook = None
+        _kbd_hook = None
         return
 
     stop_evt = threading.Event()
 
     def _hook_thread():
         global _kbd_hook
-        import ctypes
-        import ctypes.wintypes
-
-        WH_KEYBOARD_LL = 13
-        WM_KEYDOWN     = 0x0100
-        WM_SYSKEYDOWN  = 0x0104
-        WM_KEYUP       = 0x0101
-        WM_SYSKEYUP    = 0x0105
+        import ctypes, ctypes.wintypes
 
         BLOCKED_VK = {
-            0x09,  # Tab       (Alt+Tab)
+            0x09,  # Tab  (Alt+Tab)
             0x1B,  # Escape
-            0x73,  # F4        (Alt+F4)
+            0x73,  # F4   (Alt+F4)
             0x7A,  # F11
             0x5B,  # LWin
             0x5C,  # RWin
-            0x44,  # D         (Win+D)
-            0x54,  # T         (Ctrl+T)
-            0x57,  # W         (Ctrl+W)
-            0x4E,  # N         (Ctrl+N)
-            0x4C,  # L         (Ctrl+L / адресная строка)
-            0x46,  # F         (Ctrl+F)
-            0x52,  # R         (Ctrl+R / reload)
+            0x44,  # D    (Win+D)
+            0x54,  # T    (Ctrl+T)
+            0x57,  # W    (Ctrl+W)
+            0x4E,  # N    (Ctrl+N)
+            0x4C,  # L    (Ctrl+L)
+            0x46,  # F    (Ctrl+F)
+            0x52,  # R    (Ctrl+R)
         }
-
+        WH_KEYBOARD_LL = 13
+        WM_KEYDOWN, WM_SYSKEYDOWN = 0x0100, 0x0104
+        WM_KEYUP,   WM_SYSKEYUP   = 0x0101, 0x0105
         user32 = ctypes.windll.user32
+
         HOOKPROC = ctypes.WINFUNCTYPE(
             ctypes.c_long, ctypes.c_int,
-            ctypes.wintypes.WPARAM, ctypes.wintypes.LPARAM
-        )
+            ctypes.wintypes.WPARAM, ctypes.wintypes.LPARAM)
 
         def hook_proc(nCode, wParam, lParam):
-            if nCode >= 0 and wParam in (WM_KEYDOWN, WM_SYSKEYDOWN,
-                                          WM_KEYUP,   WM_SYSKEYUP):
+            if nCode >= 0 and wParam in (WM_KEYDOWN, WM_SYSKEYDOWN, WM_KEYUP, WM_SYSKEYUP):
                 vk = ctypes.cast(lParam, ctypes.POINTER(ctypes.c_ulong))[0]
                 if vk in BLOCKED_VK:
                     return 1
@@ -461,8 +453,7 @@ def _block_alttab(enable: bool):
         _hook_cb = HOOKPROC(hook_proc)
         hHook = user32.SetWindowsHookExW(WH_KEYBOARD_LL, _hook_cb, None, 0)
         _kbd_hook = hHook
-        log.info(f"Keyboard hook set in dedicated thread: {hHook}")
-        stop_evt.set()  # сигнализируем что hook установлен
+        log.info(f"Keyboard hook active: {hHook}")
 
         # Блокируем Win через реестр
         try:
@@ -474,15 +465,16 @@ def _block_alttab(enable: bool):
             winreg.CloseKey(k)
             user32.SendMessageW(0xFFFF, 0x001A, 0, "Policy")
         except Exception as e:
-            log.warning(f"Registry WinKey block failed: {e}")
+            log.warning(f"Registry WinKey: {e}")
 
-        # Message loop — обязателен чтобы hook работал
+        stop_evt.set()
+
+        # Message loop — без него hook не работает
         msg = ctypes.wintypes.MSG()
         while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
             user32.TranslateMessage(ctypes.byref(msg))
             user32.DispatchMessageW(ctypes.byref(msg))
 
-        # Снимаем hook при выходе из loop
         user32.UnhookWindowsHookEx(hHook)
         # Восстанавливаем Win-клавишу
         try:
@@ -499,11 +491,10 @@ def _block_alttab(enable: bool):
 
     _kbd_hook_thread = threading.Thread(target=_hook_thread, daemon=True)
     _kbd_hook_thread.start()
-    stop_evt.wait(timeout=2)  # ждём пока hook реально установлен
+    stop_evt.wait(timeout=2)
 
 
 def _find_chrome() -> str:
-    """Ищет путь к Chrome."""
     paths = [
         r"C:\Program Files\Google\Chrome\Application\chrome.exe",
         r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
@@ -512,88 +503,113 @@ def _find_chrome() -> str:
     for p in paths:
         if os.path.exists(p):
             return p
-    return "chrome.exe"  # fallback — если в PATH
+    return "chrome.exe"
 
 
-def _make_video_html(video_path: str, duration: int = 0) -> str:
-    """Создаёт временный HTML файл с видео-плеером."""
-    import tempfile
-    file_url = "file:///" + video_path.replace(chr(92), "/")
-    # duration=0 означает бесконечно (закрывается только через /unbanvideo)
-    html = f"""<!DOCTYPE html>
+# ── Локальный HTTP-сервер для видео (нужен для звука в Chrome) ───────────────
+
+_http_server      = None
+_http_server_port = 0
+_http_serve_dir   = ""
+
+def _start_video_http_server(directory: str) -> int:
+    """Запускает однопоточный HTTP-сервер для раздачи файлов из directory.
+    Возвращает порт."""
+    global _http_server, _http_server_port, _http_serve_dir
+    import http.server, socketserver
+
+    # Если уже запущен для той же папки — переиспользуем
+    if _http_server and _http_serve_dir == directory:
+        return _http_server_port
+
+    # Останавливаем старый если был
+    if _http_server:
+        try:
+            _http_server.shutdown()
+        except Exception:
+            pass
+
+    _http_serve_dir = directory
+
+    class Handler(http.server.SimpleHTTPRequestHandler):
+        def __init__(self, *a, **kw):
+            super().__init__(*a, directory=directory, **kw)
+        def log_message(self, *a):
+            pass  # тихий режим
+
+    # Порт 0 → ОС выдаст свободный
+    srv = socketserver.TCPServer(("127.0.0.1", 0), Handler)
+    srv.allow_reuse_address = True
+    port = srv.server_address[1]
+
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+
+    _http_server      = srv
+    _http_server_port = port
+    log.info(f"Video HTTP server on port {port}, dir={directory}")
+    return port
+
+
+def _make_video_html(video_filename: str, duration: int = 0) -> str:
+    """Возвращает HTML-строку с плеером.
+    video_filename — только имя файла (не путь), файл раздаётся через localhost."""
+    return f"""<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
 <style>
-  * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-  html, body {{ background: #000; width: 100vw; height: 100vh; overflow: hidden; }}
-  video {{ width: 100%; height: 100%; object-fit: contain; display: block; }}
+  * {{ margin:0; padding:0; box-sizing:border-box }}
+  html,body {{ background:#000; width:100vw; height:100vh; overflow:hidden }}
+  video {{ width:100%; height:100%; object-fit:contain; display:block }}
   #timer {{
-    position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%);
-    color: rgba(255,255,255,0.55); font: 16px/1 'Segoe UI', sans-serif;
-    background: rgba(0,0,0,0.45); padding: 6px 18px; border-radius: 20px;
-    pointer-events: none; display: none;
+    position:fixed; bottom:18px; left:50%; transform:translateX(-50%);
+    color:rgba(255,255,255,.6); font:15px/1 'Segoe UI',sans-serif;
+    background:rgba(0,0,0,.5); padding:5px 16px; border-radius:20px;
+    pointer-events:none; display:none
   }}
 </style>
 </head>
 <body>
 <video id="v" loop playsinline>
-  <source src="{file_url}" type="video/mp4">
+  <source src="/{video_filename}" type="video/mp4">
 </video>
 <div id="timer"></div>
 <script>
-  // ── Блокируем закрытие вкладки / навигацию назад ──
+  // Блокируем закрытие / навигацию назад
   window.addEventListener('beforeunload', function(e) {{
-    e.preventDefault();
-    e.returnValue = '';
-    return '';
+    e.preventDefault(); e.returnValue = ''; return '';
   }});
-  history.pushState(null, '', location.href);
-  window.addEventListener('popstate', function() {{
-    history.pushState(null, '', location.href);
+  history.pushState(null,'',location.href);
+  window.addEventListener('popstate',function(){{
+    history.pushState(null,'',location.href);
   }});
 
-  // ── Автовоспроизведение со звуком ──
+  // Автовоспроизведение со звуком
   var v = document.getElementById('v');
   v.volume = 1.0;
-  var playPromise = v.play();
-  if (playPromise !== undefined) {{
-    playPromise.catch(function() {{
-      // Если браузер заблокировал — пробуем через user interaction fallback
-      document.addEventListener('click', function() {{ v.play(); }}, {{ once: true }});
-      // Либо muted-старт → потом unmute
-      v.muted = true;
-      v.play().then(function() {{
-        v.muted = false;
-      }});
-    }});
-  }}
+  v.play().catch(function() {{
+    // Fallback: muted-старт → unmute
+    v.muted = true;
+    v.play().then(function() {{ v.muted = false; }});
+  }});
 
-  // ── Таймер (если duration > 0) ──
-  var duration = {duration};
-  if (duration > 0) {{
-    var timerEl = document.getElementById('timer');
-    timerEl.style.display = 'block';
-    var remaining = duration;
-    timerEl.textContent = remaining + ' сек';
+  // Таймер
+  var dur = {duration};
+  if (dur > 0) {{
+    var el = document.getElementById('timer');
+    el.style.display = 'block';
+    var rem = dur;
+    el.textContent = rem + ' сек';
     var iv = setInterval(function() {{
-      remaining--;
-      if (remaining <= 0) {{
-        clearInterval(iv);
-        timerEl.textContent = '';
-        timerEl.style.display = 'none';
-      }} else {{
-        timerEl.textContent = remaining + ' сек';
-      }}
+      rem--;
+      if (rem <= 0) {{ clearInterval(iv); el.style.display='none'; }}
+      else el.textContent = rem + ' сек';
     }}, 1000);
   }}
 </script>
 </body>
 </html>"""
-    tmp = tempfile.NamedTemporaryFile(suffix=".html", delete=False, mode='w', encoding='utf-8')
-    tmp.write(html)
-    tmp.close()
-    return tmp.name
 
 
 def show_video_overlay(video_path: str, lock: bool, duration: int,
@@ -604,16 +620,29 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
     _video_stop = threading.Event()
     stop_event  = _video_stop
 
-    # Создаём HTML страницу с видео
-    html_path = _make_video_html(video_path, duration)
+    video_path = os.path.abspath(video_path)
+    video_dir  = os.path.dirname(video_path)
+    video_file = os.path.basename(video_path)
 
-    # Убиваем все запущенные Chrome — иначе kiosk и флаги не применятся
+    # Поднимаем HTTP сервер раздающий папку с видео
+    port     = _start_video_http_server(video_dir)
+    html_str = _make_video_html(video_file, duration)
+
+    # Пишем HTML в ту же папку чтобы сервер его тоже раздал
+    import tempfile as _tf
+    html_fd, html_path = _tf.mkstemp(suffix=".html", dir=video_dir)
+    with os.fdopen(html_fd, 'w', encoding='utf-8') as f:
+        f.write(html_str)
+    html_name = os.path.basename(html_path)
+
+    video_url = f"http://127.0.0.1:{port}/{html_name}"
+
+    # Убиваем существующий Chrome чтобы --kiosk сработал как первый запуск
     subprocess.run(["taskkill", "/f", "/im", "chrome.exe"],
                    capture_output=True, timeout=5)
     time.sleep(0.8)
 
-    # Изолированный профиль чтобы Chrome точно стартовал чистым процессом
-    import tempfile as _tf
+    # Изолированный профиль — Chrome не найдёт старый процесс
     chrome_profile = _tf.mkdtemp(prefix="pc_chrome_")
 
     chrome = _find_chrome()
@@ -623,74 +652,67 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
         "--no-first-run",
         "--disable-infobars",
         "--disable-session-crashed-bubble",
-        "--disable-features=TranslateUI",
         "--noerrdialogs",
         "--autoplay-policy=no-user-gesture-required",
-        "--allow-file-access-from-files",
-        "--disable-web-security",
         "--disable-popup-blocking",
         f"--user-data-dir={chrome_profile}",
-        f"file:///{html_path.replace(chr(92), chr(47))}",
+        video_url,
     ])
-    log.info(f"Chrome started for video: {video_path}")
+    log.info(f"Chrome kiosk started: {video_url}")
 
-    # Блокируем Alt+Tab если lock=True
     if lock:
         _block_alttab(True)
 
-    answers  = []
-    q_index  = [0]
+    answers = []
+    q_index = [0]
 
-    # Создаём прозрачное поверх Chrome окно с кнопками
+    # ── Tkinter overlay поверх Chrome: только нижняя панель ──────────────────
     root = tk.Tk()
     root.overrideredirect(True)
     root.attributes("-topmost", True)
-    root.attributes("-alpha", 0.0)  # полностью прозрачное
-    root.geometry(f"{root.winfo_screenwidth()}x{root.winfo_screenheight()}+0+0")
     root.configure(bg="black")
-    _video_window = root
-
-    # Нижняя панель с кнопками — непрозрачная
-    bottom = tk.Frame(root, bg="#111111")
-    bottom.place(relx=0, rely=1.0, anchor="sw", relwidth=1.0)
-    root.attributes("-alpha", 1.0)
-    # Делаем окно прозрачным кроме нижней панели через layered window
-    # Используем цветовой ключ для прозрачности
     root.attributes("-transparentcolor", "black")
 
-    status_lbl = tk.Label(bottom, text="", bg="#111111", fg="#888",
+    sw = root.winfo_screenwidth()
+    sh = root.winfo_screenheight()
+    root.geometry(f"{sw}x{sh}+0+0")
+    _video_window = root
+
+    bottom = tk.Frame(root, bg="#111111")
+    bottom.place(relx=0, rely=1.0, anchor="sw", relwidth=1.0)
+
+    status_lbl = tk.Label(bottom, text="", bg="#111111", fg="#aaa",
                            font=("Segoe UI", 12))
-    status_lbl.pack(pady=(8, 0))
+    status_lbl.pack(pady=(8, 4))
 
     input_frame = tk.Frame(bottom, bg="#111111")
-    entry       = tk.Entry(input_frame, font=("Segoe UI", 13), width=50,
-                           bg="#222", fg="white", insertbackground="white",
-                           relief="flat", bd=8)
-    send_btn    = tk.Button(input_frame, text="Отправить",
-                            font=("Segoe UI", 12, "bold"),
-                            bg="#e94560", fg="white", relief="flat",
-                            padx=20, pady=8, cursor="hand2")
-    close_btn   = tk.Button(bottom, text="✕  Закрыть",
-                            font=("Segoe UI", 12),
-                            bg="#333", fg="white", relief="flat",
-                            padx=20, pady=8, cursor="hand2")
+    entry = tk.Entry(input_frame, font=("Segoe UI", 13), width=50,
+                     bg="#222", fg="white", insertbackground="white",
+                     relief="flat", bd=8)
+    send_btn = tk.Button(input_frame, text="Отправить",
+                         font=("Segoe UI", 12, "bold"),
+                         bg="#e94560", fg="white", relief="flat",
+                         padx=20, pady=8, cursor="hand2")
+    close_btn = tk.Button(bottom, text="✕  Закрыть",
+                          font=("Segoe UI", 12),
+                          bg="#333", fg="white", relief="flat",
+                          padx=20, pady=8, cursor="hand2")
 
     def do_close():
         stop_event.set()
-        _block_alttab(False)
-        if _chrome_proc:
-            try:
+        if lock:
+            _block_alttab(False)
+        try:
+            if _chrome_proc:
                 _chrome_proc.terminate()
-            except Exception:
-                pass
-        # Убиваем Chrome полностью (могут остаться дочерние процессы)
+        except Exception:
+            pass
         subprocess.run(["taskkill", "/f", "/im", "chrome.exe"],
                        capture_output=True, timeout=5)
         try:
             os.unlink(html_path)
         except Exception:
             pass
-        # Чистим временный профиль
         try:
             import shutil
             shutil.rmtree(chrome_profile, ignore_errors=True)
@@ -698,7 +720,10 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
             pass
         global _video_window
         _video_window = None
-        root.after(0, root.destroy)
+        try:
+            root.destroy()
+        except Exception:
+            pass
 
     def do_send():
         answer = entry.get().strip()
@@ -740,10 +765,9 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
         else:
             close_btn.pack(pady=(0, 10))
 
-    # keep on top
     def _keep_on_top():
         while not stop_event.is_set():
-            time.sleep(2)
+            time.sleep(1.5)
             if stop_event.is_set():
                 break
             try:
@@ -754,7 +778,6 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
                 break
     threading.Thread(target=_keep_on_top, daemon=True).start()
 
-    # Таймер
     if duration > 0:
         def countdown():
             time.sleep(1)
