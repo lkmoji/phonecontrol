@@ -22,18 +22,6 @@ jobs:
         run: |
           pip install -r windows/requirements.txt
 
-      - name: Download VLC and extract DLLs
-        shell: powershell
-        run: |
-          $vlcUrl = "https://download.videolan.org/pub/videolan/vlc/3.0.21/win64/vlc-3.0.21-win64.zip"
-          Invoke-WebRequest -Uri $vlcUrl -OutFile vlc.zip
-          Expand-Archive -Path vlc.zip -DestinationPath vlc_extracted
-          $vlcDir = Get-ChildItem vlc_extracted | Select-Object -First 1
-          Copy-Item "$($vlcDir.FullName)\libvlc.dll" windows\
-          Copy-Item "$($vlcDir.FullName)\libvlccore.dll" windows\
-          Copy-Item "$($vlcDir.FullName)\plugins" windows\vlc_plugins -Recurse
-          echo "VLC DLLs extracted"
-
       - name: Build EXE
         working-directory: windows
         env:
