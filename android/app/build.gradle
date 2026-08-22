@@ -18,13 +18,26 @@ android {
         buildConfigField "String", "DEVICE_SECRET", "\"mysecret42\""
     }
 
+    signingConfigs {
+        release {
+            storeFile file("phonecontrol.jks")
+            storePassword System.getenv("KEYSTORE_PASSWORD") ?: ""
+            keyAlias System.getenv("KEY_ALIAS") ?: ""
+            keyPassword System.getenv("KEY_PASSWORD") ?: ""
+        }
+    }
+
     buildFeatures {
         buildConfig true
     }
 
     buildTypes {
+        debug {
+            debuggable true
+        }
         release {
             minifyEnabled false
+            signingConfig signingConfigs.release
         }
     }
 
@@ -49,10 +62,6 @@ dependencies {
     implementation 'androidx.appcompat:appcompat:1.6.1'
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'
     implementation 'com.squareup.okhttp3:okhttp:4.12.0'
-
-    // WorkManager
     implementation 'androidx.work:work-runtime-ktx:2.9.0'
-
-    // NanoHTTPD — встроенный HTTP сервер для MJPEG стрима
     implementation 'org.nanohttpd:nanohttpd:2.3.1'
 }
