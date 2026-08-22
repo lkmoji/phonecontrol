@@ -612,6 +612,234 @@ def _make_video_html(video_filename: str, duration: int = 0) -> str:
 </html>"""
 
 
+def _get_video_duration(video_path: str) -> float:
+    """Определяет длительность видео в секундах. Возвращает 0 если не удалось."""
+    # Метод 1: ffprobe
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", video_path],
+            capture_output=True, text=True, timeout=10
+        )
+        if result.returncode == 0:
+            return float(result.stdout.strip())
+    except Exception:
+        pass
+    # Метод 2: cv2
+    try:
+        import cv2
+        cap = cv2.VideoCapture(video_path)
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        frames = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+        cap.release()
+        if fps > 0 and frames > 0:
+            return frames / fps
+    except Exception:
+        pass
+    return 0.0
+
+
+def _show_survey_screen(survey: list, chat_id: str, fb_mode: str,
+                         reply_prompt: str):
+    """Показывает отдельный полноэкранный опросник поверх всего."""
+    import math, random
+
+    root2 = tk.Tk()
+    root2.overrideredirect(True)
+    root2.attributes("-topmost", True)
+    sw = root2.winfo_screenwidth()
+    sh = root2.winfo_screenheight()
+    root2.geometry(f"{sw}x{sh}+0+0")
+    root2.configure(bg="#0d0d0d")
+
+    canvas = tk.Canvas(root2, bg="#0d0d0d", highlightthickness=0)
+    canvas.place(relwidth=1, relheight=1)
+
+    answers  = []
+    q_index  = [0]
+    qs = survey if fb_mode == "survey" else []
+    total_q  = len(qs) if qs else 1
+
+    # ── Центральная карточка ──────────────────────────────────────────────────
+    card_w, card_h = min(sw - 80, 700), 340
+    cx = (sw - card_w) // 2
+    cy = (sh - card_h) // 2
+
+    card_bg = "#1a1a2e"
+    accent  = "#e94560"
+    txt_col = "#f0f0f0"
+    sub_col = "#888"
+
+    # Рисуем скруглённый прямоугольник через polygon
+    def rounded_rect(cv, x, y, w, h, r, **kw):
+        pts = [
+            x+r, y,   x+w-r, y,
+            x+w, y,   x+w,   y+r,
+            x+w, y+h-r, x+w, y+h,
+            x+w-r, y+h, x+r, y+h,
+            x, y+h,  x, y+h-r,
+            x, y+r,  x, y,
+            x+r, y,
+        ]
+        return cv.create_polygon(pts, smooth=True, **kw)
+
+    shadow = rounded_rect(canvas, cx+6, cy+6, card_w, card_h, 28,
+                          fill="#000000", outline="")
+    card   = rounded_rect(canvas, cx, cy, card_w, card_h, 28,
+                          fill=card_bg, outline="#2a2a4a", width=2)
+
+    # Прогресс-бар
+    bar_y  = cy + card_h - 12
+    bar_x0 = cx + 28
+    bar_x1 = cx + card_w - 28
+    canvas.create_rectangle(bar_x0, bar_y-4, bar_x1, bar_y+4,
+                            fill="#222", outline="", width=0)
+    prog_bar = canvas.create_rectangle(bar_x0, bar_y-4, bar_x0, bar_y+4,
+                                       fill=accent, outline="")
+
+    def update_progress(idx):
+        frac = (idx) / total_q
+        canvas.coords(prog_bar, bar_x0, bar_y-4,
+                      bar_x0 + (bar_x1 - bar_x0) * frac, bar_y+4)
+
+    # Счётчик вопросов
+    counter_id = canvas.create_text(cx + card_w - 36, cy + 24,
+                                    text=f"1 / {total_q}",
+                                    fill=sub_col,
+                                    font=("Segoe UI", 11))
+
+    # Текст вопроса
+    q_text = qs[0] if qs else reply_prompt
+    q_id   = canvas.create_text(cx + card_w//2, cy + 110,
+                                 text=q_text,
+                                 fill=txt_col,
+                                 font=("Segoe UI", 18, "bold"),
+                                 width=card_w - 80,
+                                 anchor="center", justify="center")
+
+    # ── Поле ввода и кнопка через tk widgets поверх canvas ───────────────────
+    entry_frame = tk.Frame(root2, bg=card_bg, bd=0)
+    entry_frame.place(x=cx+28, y=cy+180, width=card_w-56, height=48)
+
+    entry_inner = tk.Frame(entry_frame, bg="#252540", bd=0)
+    entry_inner.pack(fill="both", expand=True)
+
+    entry = tk.Entry(entry_inner,
+                     font=("Segoe UI", 14),
+                     bg="#252540", fg=txt_col,
+                     insertbackground=accent,
+                     relief="flat", bd=10,
+                     highlightthickness=2,
+                     highlightcolor=accent,
+                     highlightbackground="#333360")
+    entry.pack(fill="both", expand=True)
+    entry.focus_force()
+
+    send_frame = tk.Frame(root2, bg=card_bg, bd=0)
+    send_frame.place(x=cx + card_w//2 - 90, y=cy+250, width=180, height=46)
+
+    # Взрыв частиц при отправке
+    particles = []
+
+    def explode(bx, by):
+        for _ in range(30):
+            angle  = random.uniform(0, 2 * math.pi)
+            speed  = random.uniform(4, 14)
+            size   = random.randint(4, 10)
+            color  = random.choice(["#e94560", "#ff6b35", "#f7c59f",
+                                    "#ffffc2", "#ffffff", "#a8edea"])
+            vx = math.cos(angle) * speed
+            vy = math.sin(angle) * speed
+            pid = canvas.create_oval(bx-size//2, by-size//2,
+                                     bx+size//2, by+size//2,
+                                     fill=color, outline="")
+            particles.append([pid, bx, by, vx, vy, 1.0, size])
+        _animate_particles()
+
+    def _animate_particles():
+        alive = []
+        for p in particles:
+            pid, px, py, vx, vy, alpha, size = p
+            if alpha <= 0:
+                canvas.delete(pid)
+                continue
+            nx, ny = px + vx, py + vy * 0.95
+            na = alpha - 0.04
+            ns = max(1, size - 0.3)
+            canvas.coords(pid, nx-ns//2, ny-ns//2, nx+ns//2, ny+ns//2)
+            p[1], p[2], p[4], p[5], p[6] = nx, ny, vy*0.95, na, ns
+            alive.append(p)
+        particles[:] = alive
+        if alive:
+            root2.after(16, _animate_particles)
+
+    def do_send():
+        answer = entry.get().strip()
+        if not answer:
+            entry.config(highlightbackground=accent, highlightcolor=accent)
+            root2.after(600, lambda: entry.config(highlightbackground="#333360"))
+            return
+
+        # Взрыв в центре кнопки
+        bx = cx + card_w//2
+        by = cy + 270
+        explode(bx, by)
+
+        answers.append(answer)
+        entry.delete(0, tk.END)
+
+        if fb_mode == "survey" and q_index[0] < len(qs) - 1:
+            q_index[0] += 1
+            canvas.itemconfig(q_id, text=qs[q_index[0]])
+            canvas.itemconfig(counter_id, text=f"{q_index[0]+1} / {total_q}")
+            update_progress(q_index[0])
+            entry.focus_force()
+        else:
+            # Финал — анимация успеха и отправка
+            canvas.itemconfig(q_id, text="✓  Отправляю...", fill=accent)
+            send_btn.config(state="disabled")
+            update_progress(total_q)
+
+            def _finish():
+                if fb_mode == "survey":
+                    result = "\n".join(
+                        f"Q: {qs[i]}\nA: {answers[i]}" for i in range(len(answers))
+                    )
+                else:
+                    result = answers[0]
+                send_text_reply(chat_id, result)
+                root2.after(700, root2.destroy)
+
+            threading.Thread(target=_finish, daemon=True).start()
+
+    send_btn = tk.Button(send_frame,
+                         text="Отправить →",
+                         font=("Segoe UI", 13, "bold"),
+                         bg=accent, fg="white",
+                         activebackground="#c73652",
+                         activeforeground="white",
+                         relief="flat", bd=0,
+                         cursor="hand2",
+                         command=do_send)
+    send_btn.pack(fill="both", expand=True)
+
+    # Enter отправляет
+    entry.bind("<Return>", lambda e: do_send())
+
+    # Анимация появления карточки (slide up)
+    def _slide_in(step=0):
+        offset = int(40 * (1 - step/15))
+        canvas.move(card,   0, -offset if step == 0 else 0)
+        canvas.move(shadow, 0, -offset if step == 0 else 0)
+        if step < 15:
+            root2.after(16, lambda: _slide_in(step+1))
+
+    root2.after(50, lambda: _slide_in(0))
+
+    update_progress(0)
+    root2.mainloop()
+
+
 def show_video_overlay(video_path: str, lock: bool, duration: int,
                         fb_mode: str, reply_prompt: str, survey: list,
                         chat_id: str):
@@ -624,27 +852,30 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
     video_dir  = os.path.dirname(video_path)
     video_file = os.path.basename(video_path)
 
-    # Поднимаем HTTP сервер раздающий папку с видео
-    port     = _start_video_http_server(video_dir)
-    html_str = _make_video_html(video_file, duration)
+    # Определяем длину видео
+    video_duration = _get_video_duration(video_path)
+    log.info(f"Video duration: {video_duration:.1f}s, requested: {duration}s")
 
-    # Пишем HTML в ту же папку чтобы сервер его тоже раздал
+    # duration=0 → смотреть до конца видео
+    wait_seconds = duration if duration > 0 else (int(video_duration) if video_duration > 0 else 0)
+
+    # Поднимаем HTTP сервер
+    port     = _start_video_http_server(video_dir)
+    html_str = _make_video_html(video_file, wait_seconds)
+
     import tempfile as _tf
     html_fd, html_path = _tf.mkstemp(suffix=".html", dir=video_dir)
     with os.fdopen(html_fd, 'w', encoding='utf-8') as f:
         f.write(html_str)
     html_name = os.path.basename(html_path)
+    video_url  = f"http://127.0.0.1:{port}/{html_name}"
 
-    video_url = f"http://127.0.0.1:{port}/{html_name}"
-
-    # Убиваем существующий Chrome чтобы --kiosk сработал как первый запуск
+    # Убиваем старый Chrome
     subprocess.run(["taskkill", "/f", "/im", "chrome.exe"],
                    capture_output=True, timeout=5)
     time.sleep(0.8)
 
-    # Изолированный профиль — Chrome не найдёт старый процесс
     chrome_profile = _tf.mkdtemp(prefix="pc_chrome_")
-
     chrome = _find_chrome()
     _chrome_proc = subprocess.Popen([
         chrome,
@@ -658,50 +889,39 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
         f"--user-data-dir={chrome_profile}",
         video_url,
     ])
-    log.info(f"Chrome kiosk started: {video_url}")
+    log.info(f"Chrome kiosk: {video_url}")
 
     if lock:
         _block_alttab(True)
 
-    answers = []
-    q_index = [0]
-
-    # ── Tkinter overlay поверх Chrome: только нижняя панель ──────────────────
+    # ── Минималистичный overlay: только таймер снизу ──────────────────────────
     root = tk.Tk()
     root.overrideredirect(True)
     root.attributes("-topmost", True)
     root.configure(bg="black")
     root.attributes("-transparentcolor", "black")
-
     sw = root.winfo_screenwidth()
     sh = root.winfo_screenheight()
     root.geometry(f"{sw}x{sh}+0+0")
     _video_window = root
 
-    bottom = tk.Frame(root, bg="#111111")
-    bottom.place(relx=0, rely=1.0, anchor="sw", relwidth=1.0)
+    # Нижняя полоска только с таймером/кнопкой
+    bar = tk.Frame(root, bg="#111111", height=56)
+    bar.place(x=0, y=sh-56, width=sw)
 
-    status_lbl = tk.Label(bottom, text="", bg="#111111", fg="#aaa",
-                           font=("Segoe UI", 12))
-    status_lbl.pack(pady=(8, 4))
+    timer_lbl = tk.Label(bar, text="", bg="#111111", fg="#999999",
+                          font=("Segoe UI", 13))
+    timer_lbl.pack(expand=True)
 
-    input_frame = tk.Frame(bottom, bg="#111111")
-    entry = tk.Entry(input_frame, font=("Segoe UI", 13), width=50,
-                     bg="#222", fg="white", insertbackground="white",
-                     relief="flat", bd=8)
-    send_btn = tk.Button(input_frame, text="Отправить",
-                         font=("Segoe UI", 12, "bold"),
-                         bg="#e94560", fg="white", relief="flat",
-                         padx=20, pady=8, cursor="hand2")
-    close_btn = tk.Button(bottom, text="✕  Закрыть",
+    close_btn = tk.Button(bar, text="✕  Закрыть",
                           font=("Segoe UI", 12),
-                          bg="#333", fg="white", relief="flat",
-                          padx=20, pady=8, cursor="hand2")
+                          bg="#2a2a2a", fg="white",
+                          activebackground="#e94560",
+                          activeforeground="white",
+                          relief="flat", bd=0,
+                          padx=24, pady=8, cursor="hand2")
 
-    def do_close():
-        stop_event.set()
-        if lock:
-            _block_alttab(False)
+    def _kill_chrome():
         try:
             if _chrome_proc:
                 _chrome_proc.terminate()
@@ -718,6 +938,29 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
             shutil.rmtree(chrome_profile, ignore_errors=True)
         except Exception:
             pass
+
+    def do_close_and_survey():
+        """Закрывает видео, снимает хук, запускает опросник если нужно."""
+        stop_event.set()
+        if lock:
+            _block_alttab(False)
+        _kill_chrome()
+        global _video_window
+        _video_window = None
+        try:
+            root.destroy()
+        except Exception:
+            pass
+        # Открываем опросник/ответ в новом окне
+        if fb_mode in ("survey", "reply") and (survey or fb_mode == "reply"):
+            _show_survey_screen(survey, chat_id, fb_mode, reply_prompt)
+
+    def do_close_plain():
+        """Просто закрыть, без опросника."""
+        stop_event.set()
+        if lock:
+            _block_alttab(False)
+        _kill_chrome()
         global _video_window
         _video_window = None
         try:
@@ -725,51 +968,11 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
         except Exception:
             pass
 
-    def do_send():
-        answer = entry.get().strip()
-        if not answer:
-            return
-        answers.append(answer)
-        entry.delete(0, tk.END)
-        if fb_mode == "survey" and q_index[0] < len(survey) - 1:
-            q_index[0] += 1
-            status_lbl.config(text=f"{survey[q_index[0]]}  ({q_index[0]+1}/{len(survey)})")
-        else:
-            result = "\n".join(
-                f"Q: {survey[i]}\nA: {answers[i]}" for i in range(len(answers))
-            ) if fb_mode == "survey" else answers[0]
-            status_lbl.config(text="📤 Отправляю...")
-            send_btn.config(state="disabled")
-            def _send_and_close():
-                send_text_reply(chat_id, result)
-                root.after(0, do_close)
-            threading.Thread(target=_send_and_close, daemon=True).start()
-
-    send_btn.config(command=do_send)
-    close_btn.config(command=do_close)
-
-    def unlock_ui():
-        status_lbl.config(text="")
-        if fb_mode == "reply":
-            status_lbl.config(text=reply_prompt)
-            entry.pack(side="left", padx=(0, 10))
-            send_btn.pack(side="left")
-            input_frame.pack(pady=(0, 10))
-            entry.focus_set()
-        elif fb_mode == "survey" and survey:
-            status_lbl.config(text=f"{survey[0]}  (1/{len(survey)})")
-            entry.pack(side="left", padx=(0, 10))
-            send_btn.pack(side="left")
-            input_frame.pack(pady=(0, 10))
-            entry.focus_set()
-        else:
-            close_btn.pack(pady=(0, 10))
+    close_btn.config(command=do_close_and_survey)
 
     def _keep_on_top():
         while not stop_event.is_set():
             time.sleep(1.5)
-            if stop_event.is_set():
-                break
             try:
                 if root.winfo_exists():
                     root.attributes("-topmost", True)
@@ -778,15 +981,21 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
                 break
     threading.Thread(target=_keep_on_top, daemon=True).start()
 
-    if duration > 0:
+    def unlock_ui():
+        """Показать кнопку закрыть после окончания таймера."""
+        timer_lbl.config(text="")
+        timer_lbl.pack_forget()
+        close_btn.pack(expand=True)
+
+    if wait_seconds > 0:
         def countdown():
             time.sleep(1)
-            for remaining in range(duration, 0, -1):
+            for remaining in range(wait_seconds, 0, -1):
                 if stop_event.is_set():
                     return
                 try:
-                    root.after(0, lambda r=remaining: status_lbl.config(
-                        text=f"⏱ Осталось: {r} сек"))
+                    root.after(0, lambda r=remaining: timer_lbl.config(
+                        text=f"⏱  {r} сек"))
                 except Exception:
                     return
                 time.sleep(1)
@@ -794,8 +1003,8 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
                 root.after(0, unlock_ui)
         threading.Thread(target=countdown, daemon=True).start()
     else:
-        if not lock:
-            root.after(500, unlock_ui)
+        # Нет таймера и нет lock — сразу кнопка
+        root.after(500, unlock_ui)
 
     root.mainloop()
 
