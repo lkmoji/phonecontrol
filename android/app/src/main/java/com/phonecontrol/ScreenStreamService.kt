@@ -338,14 +338,14 @@ class MjpegServer(
 }
 
 // ── WebSocket сервер для касаний ──────────────────────────────────────────────
-class TouchWsServer(port: Int, private val ctx: Context) {
+class TouchWsServer(private val wsPort: Int, private val ctx: Context) {
     private var serverSocket: ServerSocket? = null
     private val clients = mutableListOf<Socket>()
     private var capturing = false
 
     fun start() {
         Thread {
-            serverSocket = ServerSocket(port)
+            serverSocket = ServerSocket(wsPort)
             while (true) {
                 try {
                     val client = serverSocket!!.accept()
