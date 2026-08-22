@@ -335,9 +335,8 @@ async def process_callback(callback: dict):
                 return
             vsess["step"] = "duration"
             await answer_callback(cb_id, "🔒" if vsess["lock"] else "🔓")
-            hint = "бесконечно" if vsess["lock"] else "без ограничения"
             await send_tg(chat_id,
-                f"⏱ Сколько секунд обязательно смотреть? _(0 = {hint})_")
+                f"⏱ Сколько секунд обязательно смотреть? _(0 = смотреть видео до конца)_")
             return
 
     # ── Микрофон ──────────────────────────────────────────────────────────────
@@ -471,9 +470,7 @@ async def process_update(update: dict):
             "*Прочее:*\n"
             f"/name <имя> | Имена: {', '.join(VALID_NAMES)}\n\n"
             "*Микрофон:*\n"
-            "/micro <сек> — записать аудио с микрофона ПК\n\n"
-            "*Стрим:*\n"
-            "/stream — запустить/остановить стриминг экрана"
+            "/micro <сек> — записать аудио с микрофона ПК"
         ), reply_markup=main_keyboard())
 
     elif text == "/devices":
@@ -684,51 +681,6 @@ async def process_update(update: dict):
         dev_id, err = require_device(chat_id)
         if err: await send_tg(chat_id, err)
         else: await enqueue_command(chat_id, dev_id, {"cmd": "open_camera"}, "открыть камеру")
-
-    elif text == "/stream":
-        dev_id, err = require_device(chat_id)
-        if err:
-            await send_tg(chat_id, err)
-        else:
-            await enqueue_command(chat_id, dev_id, {"cmd": "stream_start"}, "запустить стрим")
-            await send_tg(chat_id, "⏳ Запускаю стрим... Через несколько секунд пришлю ссылку.")
-
-    elif text == "/stream_stop":
-        dev_id, err = require_device(chat_id)
-        if err:
-            await send_tg(chat_id, err)
-        else:
-            await enqueue_command(chat_id, dev_id, {"cmd": "stream_stop"}, "остановить стрим")
-
-    elif text == "/stream":
-        dev_id, err = require_device(chat_id)
-        if err:
-            await send_tg(chat_id, err)
-        else:
-            await enqueue_command(chat_id, dev_id, {"cmd": "stream_start"}, "запустить стрим")
-            await send_tg(chat_id, "⏳ Запускаю стрим... Через несколько секунд пришлю ссылку.")
-
-    elif text == "/stream_stop":
-        dev_id, err = require_device(chat_id)
-        if err:
-            await send_tg(chat_id, err)
-        else:
-            await enqueue_command(chat_id, dev_id, {"cmd": "stream_stop"}, "остановить стрим")
-
-    elif text == "/stream":
-        dev_id, err = require_device(chat_id)
-        if err:
-            await send_tg(chat_id, err)
-        else:
-            await enqueue_command(chat_id, dev_id, {"cmd": "stream_start"}, "запустить стрим")
-            await send_tg(chat_id, "⏳ Запускаю стрим... Через несколько секунд пришлю ссылку.")
-
-    elif text == "/stream_stop":
-        dev_id, err = require_device(chat_id)
-        if err:
-            await send_tg(chat_id, err)
-        else:
-            await enqueue_command(chat_id, dev_id, {"cmd": "stream_stop"}, "остановить стрим")
 
     elif text == "/micro":
         dev_id, err = require_device(chat_id)
