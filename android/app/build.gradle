@@ -14,7 +14,7 @@ android {
         versionCode 3
         versionName "1.2"
 
-        buildConfigField "String", "SERVER_URL", "\"https://phonecontrol-2tkw.onrender.com\""
+        buildConfigField "String", "SERVER_URL", "\"https://phonecontrol.wispbyte.app\""
         buildConfigField "String", "DEVICE_SECRET", "\"mysecret42\""
     }
 
