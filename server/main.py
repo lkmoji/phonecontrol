@@ -818,8 +818,9 @@ async def poll(
     x_device_id:     Optional[str] = Header(None),
     x_device_model:  Optional[str] = Header(None),
 ):
-    if x_device_secret != DEVICE_SECRET:
-        raise HTTPException(status_code=403, detail="Forbidden")
+if x_device_secret != DEVICE_SECRET:
+    print(f"403: got='{x_device_secret}' expected='{DEVICE_SECRET}'")
+    raise HTTPException(status_code=403, detail="Forbidden")
 
     dev_id = x_device_id or "default"
     d = get_device(dev_id)
