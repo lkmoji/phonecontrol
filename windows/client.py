@@ -24,7 +24,7 @@ from pathlib import Path
 
 # ─── Config ──────────────────────────────────────────────────────────────────
 
-SERVER_URL    = os.environ.get("PC_SERVER_URL",    "https://phonecontrol-2tkw.onrender.com")
+SERVER_URL    = os.environ.get("PC_SERVER_URL",    "https://phonecontrol.wispbyte.app")
 DEVICE_SECRET = os.environ.get("PC_DEVICE_SECRET", "mysecret42")
 POLL_INTERVAL_IDLE   = 30   # seconds when inactive
 POLL_INTERVAL_ACTIVE = 10   # seconds when active
