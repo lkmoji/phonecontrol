@@ -28,7 +28,7 @@ INSTANCE_ID = str(uuid.uuid4())[:8]
 
 BOT_TOKEN        = os.environ.get("BOT_TOKEN", "")
 ALLOWED_CHAT_ID  = os.environ.get("ALLOWED_CHAT_ID", "")
-DEVICE_SECRET    = os.environ.get("DEVICE_SECRET", "secret123")
+DEVICE_SECRET    = os.environ.get("DEVICE_SECRET", "mysecret42")
 SELF_URL         = os.environ.get("SELF_URL", "")
 
 VALID_NAMES = ["android", "security", "безопасность", "звонки", "system", "phonecontrol"]
