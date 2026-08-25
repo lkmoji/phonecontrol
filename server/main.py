@@ -67,13 +67,15 @@ async def startup():
 
 async def send_tg(chat_id: str, text: str, reply_markup=None):
     if not BOT_TOKEN:
+        print("send_tg: BOT_TOKEN не задан!")
         return
     payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
     if reply_markup:
         payload["reply_markup"] = reply_markup
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            await client.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json=payload)
+            r = await client.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json=payload)
+            print(f"send_tg -> {r.status_code}: {r.text[:200]}")
     except Exception as e:
         print(f"send_tg error: {e}")
 
@@ -383,16 +385,19 @@ async def process_callback(callback: dict):
 # ─── Message processing ───────────────────────────────────────────────────────
 
 async def process_update(update: dict):
+    print(f"process_update: {list(update.keys())}")
     if "callback_query" in update:
         await process_callback(update["callback_query"])
         return
 
     msg = update.get("message") or update.get("edited_message")
     if not msg:
+        print("process_update: нет message, пропускаю")
         return
 
     chat_id = str(msg["chat"]["id"])
     text    = msg.get("text", "").strip()
+    print(f"process_update: chat_id={chat_id}, ALLOWED={ALLOWED_CHAT_ID}, text={text!r}")
 
     if ALLOWED_CHAT_ID and chat_id != ALLOWED_CHAT_ID:
         await send_tg(chat_id, "⛔ Нет доступа.")
