@@ -1,5 +1,7 @@
 from fastapi import FastAPI, Header, HTTPException, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
 from typing import Optional
 import os
 import asyncio
@@ -9,6 +11,17 @@ import uuid
 import urllib.parse
 
 app = FastAPI()
+
+# ─── Fix для Amvera: health-check приходит на //health ───────────────────────
+
+class NormalizeSlashMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        scope = request.scope
+        if scope["path"].startswith("//"):
+            scope["path"] = scope["path"][1:]
+        return await call_next(request)
+
+app.add_middleware(NormalizeSlashMiddleware)
 
 # ─── Состояние ───────────────────────────────────────────────────────────────
 
