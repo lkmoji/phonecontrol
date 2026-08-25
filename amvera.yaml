@@ -3,11 +3,9 @@ meta:
   toolchain:
     name: pip
     version: "3.11"
-
 build:
   requirementsPath: server/requirements.txt
-
 run:
   persistenceMount: /data
-  command: uvicorn server.main:app --host 0.0.0.0 --port 80
+  command: uvicorn main:app --host 0.0.0.0 --port 80 --app-dir server
   containerPort: 80
