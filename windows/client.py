@@ -894,20 +894,19 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
     if lock:
         _block_alttab(True)
 
-    # ── Минималистичный overlay: только таймер снизу ──────────────────────────
+    # ── Минималистичный overlay: только нижняя полоска ──────────────────────────
     root = tk.Tk()
     root.overrideredirect(True)
     root.attributes("-topmost", True)
-    root.configure(bg="black")
-    root.attributes("-transparentcolor", "black")
     sw = root.winfo_screenwidth()
     sh = root.winfo_screenheight()
-    root.geometry(f"{sw}x{sh}+0+0")
+    # Окно занимает только нижнюю полоску — Chrome виден выше
+    root.geometry(f"{sw}x56+0+{sh-56}")
     _video_window = root
 
     # Нижняя полоска только с таймером/кнопкой
     bar = tk.Frame(root, bg="#111111", height=56)
-    bar.place(x=0, y=sh-56, width=sw)
+    bar.place(x=0, y=0, width=sw)
 
     timer_lbl = tk.Label(bar, text="", bg="#111111", fg="#999999",
                           font=("Segoe UI", 13))
