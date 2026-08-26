@@ -237,6 +237,12 @@ def msg_mode_keyboard():
         {"text": "📋 Опросник",  "callback_data": "msg_survey"},
     ]]}
 
+def msg_minimize_keyboard():
+    return {"inline_keyboard": [[
+        {"text": "🖥 Свернуть всё + эффект", "callback_data": "msg_minimize_yes"},
+        {"text": "▶️ Просто показать",        "callback_data": "msg_minimize_no"},
+    ]]}
+
 def video_mode_keyboard():
     return {"inline_keyboard": [[
         {"text": "▶️ Просто показать",   "callback_data": "vmsg_plain"},
@@ -374,19 +380,39 @@ async def process_callback(callback: dict):
     if msess and msess["step"] == "mode" and data in ("msg_plain", "msg_reply", "msg_survey"):
         mode_map = {"msg_plain": "plain", "msg_reply": "reply", "msg_survey": "survey"}
         msess["fb_mode"] = mode_map[data]
-        dev_id = msess["dev_id"]
         await answer_callback(cb_id)
 
-        cmd = {"cmd": "show_message", "text": msess["text"], "fb_mode": msess["fb_mode"]}
-        if msess["fb_mode"] == "survey":
-            if not state["questions"]:
-                state["msg_sessions"].pop(chat_id, None)
-                await send_tg(chat_id, "⚠️ Список вопросов пуст. Добавь через /addq <вопрос>")
-                return
-            build_survey_cmd(cmd)
-        if msess["fb_mode"] == "reply":
-            cmd["reply_prompt"] = "✏️ Напиши ответ:"
+        if msess["fb_mode"] == "survey" and not state["questions"]:
+            state["msg_sessions"].pop(chat_id, None)
+            await send_tg(chat_id, "⚠️ Список вопросов пуст. Добавь через /addq <вопрос>")
+            return
 
+        # Для plain — спрашиваем про сворачивание; для остальных сразу отправляем
+        if msess["fb_mode"] == "plain":
+            msess["step"] = "minimize"
+            await send_tg(chat_id, "🖥 Свернуть все окна перед показом?",
+                          reply_markup=msg_minimize_keyboard())
+        else:
+            dev_id = msess["dev_id"]
+            cmd = {"cmd": "show_message", "text": msess["text"], "fb_mode": msess["fb_mode"]}
+            if msess["fb_mode"] == "survey":
+                build_survey_cmd(cmd)
+            if msess["fb_mode"] == "reply":
+                cmd["reply_prompt"] = "✏️ Напиши ответ:"
+            state["msg_sessions"].pop(chat_id, None)
+            await enqueue_multi(chat_id, cmd, "сообщение")
+        return
+
+    if msess and msess["step"] == "minimize" and data in ("msg_minimize_yes", "msg_minimize_no"):
+        msess["minimize"] = (data == "msg_minimize_yes")
+        await answer_callback(cb_id)
+
+        cmd = {
+            "cmd": "show_message",
+            "text": msess["text"],
+            "fb_mode": "plain",
+            "minimize": msess["minimize"],
+        }
         state["msg_sessions"].pop(chat_id, None)
         await enqueue_multi(chat_id, cmd, "сообщение")
         return
