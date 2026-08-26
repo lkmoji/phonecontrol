@@ -1567,6 +1567,452 @@ def take_screenshot(chat_id: str):
         except Exception:
             pass
 
+# ─── WiFi Screen Streaming (MJPEG, аналог Android ScreenStreamService) ────────
+#
+# Запускает локальный HTTP-сервер на порту 8080 (MJPEG /stream)
+# и WebSocket-сервер на порту 8081 (мышь / клики).
+# Браузер на телефоне открывает http://<PC-IP>:8080 и видит экран ПК.
+# Управление кликами передаётся через WS и эмулируется через pyautogui.
+#
+# Зависимости (добавить в requirements.txt):
+#   pyautogui>=0.9.54
+#   Pillow>=10.0.0  (уже есть)
+
+STREAM_HTTP_PORT = 8080
+STREAM_WS_PORT   = 8081
+STREAM_FPS       = 15          # кадров в секунду
+STREAM_WIDTH     = 1280        # ширина захвата (0 = полный экран)
+STREAM_QUALITY   = 60          # JPEG качество 1–95
+
+import socket as _socket
+import struct as _struct
+import hashlib as _hashlib
+import base64 as _base64
+import io as _io
+from threading import Thread, Event
+from typing import Optional
+from queue import Queue, Empty
+
+_stream_stop_event: Optional[Event] = None
+_stream_ip: str = ""
+
+
+def _get_local_ip() -> str:
+    """Определяет локальный IP в сети (как в Android getLocalIpAddress)."""
+    try:
+        s = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
+
+
+class _MjpegFrameProvider:
+    """Захватывает кадры экрана в фоновом потоке, хранит последний."""
+    def __init__(self, stop_event: Event, fps: int, width: int, quality: int):
+        self._stop = stop_event
+        self._delay = 1.0 / fps
+        self._width = width
+        self._quality = quality
+        self._frame: Optional[bytes] = None
+        self._lock = __import__("threading").Lock()
+
+    def get_frame(self) -> Optional[bytes]:
+        with self._lock:
+            return self._frame
+
+    def run(self):
+        from PIL import ImageGrab
+        import time
+        while not self._stop.is_set():
+            try:
+                img = ImageGrab.grab()
+                if self._width and img.width > self._width:
+                    ratio = self._width / img.width
+                    img = img.resize(
+                        (self._width, int(img.height * ratio)),
+                        resample=1  # LANCZOS
+                    )
+                buf = _io.BytesIO()
+                img.save(buf, format="JPEG", quality=self._quality)
+                with self._lock:
+                    self._frame = buf.getvalue()
+            except Exception as e:
+                log.error(f"stream frame: {e}")
+            time.sleep(self._delay)
+
+
+def _ws_handshake(conn: _socket.socket) -> bool:
+    """Выполняет WebSocket handshake (RFC 6455)."""
+    try:
+        data = b""
+        while b"\r\n\r\n" not in data:
+            chunk = conn.recv(4096)
+            if not chunk:
+                return False
+            data += chunk
+        headers = {}
+        for line in data.decode(errors="ignore").split("\r\n")[1:]:
+            if ": " in line:
+                k, v = line.split(": ", 1)
+                headers[k.strip()] = v.strip()
+        key = headers.get("Sec-WebSocket-Key", "")
+        magic = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+        accept = _base64.b64encode(
+            _hashlib.sha1((key + magic).encode()).digest()
+        ).decode()
+        resp = (
+            "HTTP/1.1 101 Switching Protocols\r\n"
+            "Upgrade: websocket\r\n"
+            "Connection: Upgrade\r\n"
+            f"Sec-WebSocket-Accept: {accept}\r\n\r\n"
+        )
+        conn.sendall(resp.encode())
+        return True
+    except Exception as e:
+        log.error(f"ws_handshake: {e}")
+        return False
+
+
+def _ws_read_frame(conn: _socket.socket) -> Optional[str]:
+    """Читает один WebSocket фрейм и возвращает строку текста."""
+    try:
+        header = b""
+        while len(header) < 2:
+            b = conn.recv(2 - len(header))
+            if not b:
+                return None
+            header += b
+        b0, b1 = header
+        masked = bool(b1 & 0x80)
+        length = b1 & 0x7F
+        if length == 126:
+            ext = conn.recv(2)
+            length = _struct.unpack("!H", ext)[0]
+        elif length == 127:
+            ext = conn.recv(8)
+            length = _struct.unpack("!Q", ext)[0]
+        mask_key = conn.recv(4) if masked else b"\x00\x00\x00\x00"
+        payload = b""
+        while len(payload) < length:
+            chunk = conn.recv(length - len(payload))
+            if not chunk:
+                return None
+            payload += chunk
+        if masked:
+            payload = bytes(b ^ mask_key[i % 4] for i, b in enumerate(payload))
+        return payload.decode("utf-8", errors="ignore")
+    except Exception:
+        return None
+
+
+def _handle_ws_client(conn: _socket.socket, stop_event: Event):
+    """Обрабатывает одно WebSocket-соединение (клики/мышь)."""
+    if not _ws_handshake(conn):
+        conn.close()
+        return
+    import json as _json
+    try:
+        import pyautogui
+        pyautogui.FAILSAFE = False
+    except ImportError:
+        pyautogui = None
+        log.warning("pyautogui не установлен — клики через WS недоступны")
+
+    while not stop_event.is_set():
+        msg = _ws_read_frame(conn)
+        if msg is None:
+            break
+        try:
+            data = _json.loads(msg)
+            t = data.get("type")
+            if pyautogui is None:
+                continue
+            sw = pyautogui.size().width
+            sh = pyautogui.size().height
+            if t == "tap":
+                x = int(data["x"] * sw)
+                y = int(data["y"] * sh)
+                pyautogui.click(x, y)
+                log.info(f"WS tap: {x},{y}")
+            elif t == "move":
+                x = int(data["x"] * sw)
+                y = int(data["y"] * sh)
+                pyautogui.moveTo(x, y)
+            elif t == "scroll":
+                x = int(data["x"] * sw)
+                y = int(data["y"] * sh)
+                pyautogui.scroll(int(data.get("dy", 0) * -10), x=x, y=y)
+        except Exception as e:
+            log.error(f"ws msg: {e}")
+    conn.close()
+
+
+def _serve_mjpeg_client(conn: _socket.socket, provider: _MjpegFrameProvider,
+                         stop_event: Event):
+    """Стримит MJPEG одному HTTP-клиенту."""
+    boundary = "PhoneControlBoundary"
+    try:
+        # Читаем запрос (минимально)
+        buf = b""
+        while b"\r\n\r\n" not in buf:
+            chunk = conn.recv(4096)
+            if not chunk:
+                return
+            buf += chunk
+
+        headers = (
+            "HTTP/1.1 200 OK\r\n"
+            f"Content-Type: multipart/x-mixed-replace; boundary={boundary}\r\n"
+            "Cache-Control: no-cache\r\n"
+            "Access-Control-Allow-Origin: *\r\n"
+            "Connection: close\r\n\r\n"
+        )
+        conn.sendall(headers.encode())
+
+        import time
+        delay = 1.0 / STREAM_FPS
+        while not stop_event.is_set():
+            frame = provider.get_frame()
+            if frame is None:
+                time.sleep(0.05)
+                continue
+            part = (
+                f"--{boundary}\r\n"
+                f"Content-Type: image/jpeg\r\n"
+                f"Content-Length: {len(frame)}\r\n\r\n"
+            ).encode() + frame + b"\r\n"
+            conn.sendall(part)
+            time.sleep(delay)
+    except Exception:
+        pass
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _serve_html(conn: _socket.socket, ip: str):
+    """Отдаёт HTML-страницу просмотра (аналог Android serveHtml)."""
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>PhoneControl Stream — PC</title>
+<style>
+  * {{ margin:0; padding:0; box-sizing:border-box; }}
+  body {{ background:#000; display:flex; flex-direction:column; align-items:center;
+         height:100vh; overflow:hidden; font-family:sans-serif; }}
+  #screen {{ width:100%; max-height:calc(100vh - 60px); object-fit:contain;
+             cursor:crosshair; display:block; }}
+  #bar {{ width:100%; height:60px; background:#111; display:flex;
+          align-items:center; justify-content:center; gap:16px; }}
+  #captureBtn {{ padding:10px 24px; background:#e94560; color:#fff; border:none;
+                 border-radius:8px; font-size:16px; cursor:pointer; }}
+  #captureBtn.active {{ background:#27ae60; }}
+  #status {{ color:#888; font-size:13px; }}
+</style>
+</head>
+<body>
+<img id="screen" src="/stream">
+<div id="bar">
+  <button id="captureBtn" onclick="toggleCapture()">🖱 Перехватить управление</button>
+  <span id="status">Просмотр</span>
+</div>
+<script>
+  var capturing = false;
+  var ws = new WebSocket('ws://{ip}:{STREAM_WS_PORT}');
+  ws.onopen = function() {{ document.getElementById('status').textContent = 'WS подключён'; }}
+  ws.onerror = function() {{ document.getElementById('status').textContent = 'WS ошибка'; }}
+
+  function toggleCapture() {{
+    capturing = !capturing;
+    var btn = document.getElementById('captureBtn');
+    var st  = document.getElementById('status');
+    btn.textContent = capturing ? '⛔ Отпустить управление' : '🖱 Перехватить управление';
+    btn.className   = capturing ? 'active' : '';
+    st.textContent  = capturing ? 'Управление активно' : 'Просмотр';
+  }}
+
+  var img = document.getElementById('screen');
+
+  img.addEventListener('click', function(e) {{
+    if (!capturing) return;
+    var r = img.getBoundingClientRect();
+    var x = (e.clientX - r.left) / r.width;
+    var y = (e.clientY - r.top)  / r.height;
+    ws.send(JSON.stringify({{type:'tap', x:x, y:y}}));
+  }});
+
+  img.addEventListener('mousemove', function(e) {{
+    if (!capturing) return;
+    var r = img.getBoundingClientRect();
+    var x = (e.clientX - r.left) / r.width;
+    var y = (e.clientY - r.top)  / r.height;
+    ws.send(JSON.stringify({{type:'move', x:x, y:y}}));
+  }});
+
+  img.addEventListener('wheel', function(e) {{
+    if (!capturing) return;
+    e.preventDefault();
+    var r = img.getBoundingClientRect();
+    var x = (e.clientX - r.left) / r.width;
+    var y = (e.clientY - r.top)  / r.height;
+    ws.send(JSON.stringify({{type:'scroll', x:x, y:y, dy:e.deltaY}}));
+  }}, {{passive:false}});
+
+  /* Touch (мобильный браузер) */
+  var touchStart = null;
+  img.addEventListener('touchstart', function(e) {{
+    if (!capturing) return;
+    e.preventDefault();
+    var r = img.getBoundingClientRect();
+    var t = e.touches[0];
+    touchStart = {{x:(t.clientX-r.left)/r.width, y:(t.clientY-r.top)/r.height}};
+  }}, {{passive:false}});
+
+  img.addEventListener('touchend', function(e) {{
+    if (!capturing || !touchStart) return;
+    e.preventDefault();
+    var r = img.getBoundingClientRect();
+    var t = e.changedTouches[0];
+    var ex = (t.clientX-r.left)/r.width, ey = (t.clientY-r.top)/r.height;
+    ws.send(JSON.stringify({{type:'tap', x:touchStart.x, y:touchStart.y}}));
+    touchStart = null;
+  }}, {{passive:false}});
+</script>
+</body>
+</html>"""
+    body = html.encode("utf-8")
+    resp = (
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: text/html; charset=utf-8\r\n"
+        f"Content-Length: {len(body)}\r\n"
+        "Connection: close\r\n\r\n"
+    )
+    try:
+        conn.sendall(resp.encode() + body)
+    except Exception:
+        pass
+    finally:
+        conn.close()
+
+
+def _run_http_server(provider: _MjpegFrameProvider, stop_event: Event, ip: str):
+    """Принимает HTTP-соединения и раздаёт HTML или MJPEG-стрим."""
+    srv = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+    srv.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
+    srv.bind(("", STREAM_HTTP_PORT))
+    srv.listen(10)
+    srv.settimeout(1.0)
+    log.info(f"MJPEG HTTP server on {ip}:{STREAM_HTTP_PORT}")
+    while not stop_event.is_set():
+        try:
+            conn, _ = srv.accept()
+        except _socket.timeout:
+            continue
+        except Exception:
+            break
+        # Читаем первую строку запроса чтобы понять маршрут
+        try:
+            peek = conn.recv(4096, _socket.MSG_PEEK)
+            first_line = peek.split(b"\r\n")[0].decode(errors="ignore")
+            path = first_line.split(" ")[1] if " " in first_line else "/"
+        except Exception:
+            path = "/"
+
+        if path.startswith("/stream"):
+            Thread(target=_serve_mjpeg_client,
+                   args=(conn, provider, stop_event), daemon=True).start()
+        else:
+            Thread(target=_serve_html, args=(conn, ip), daemon=True).start()
+    srv.close()
+
+
+def _run_ws_server(stop_event: Event):
+    """WebSocket-сервер для передачи кликов мыши."""
+    srv = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+    srv.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
+    srv.bind(("", STREAM_WS_PORT))
+    srv.listen(10)
+    srv.settimeout(1.0)
+    log.info(f"WS server on :{STREAM_WS_PORT}")
+    while not stop_event.is_set():
+        try:
+            conn, _ = srv.accept()
+        except _socket.timeout:
+            continue
+        except Exception:
+            break
+        Thread(target=_handle_ws_client,
+               args=(conn, stop_event), daemon=True).start()
+    srv.close()
+
+
+def start_screen_stream(chat_id: str):
+    """Запускает WiFi-стриминг экрана ПК. Отправляет URL в чат."""
+    global _stream_stop_event, _stream_ip
+    if _stream_stop_event and not _stream_stop_event.is_set():
+        # Уже запущен — отправляем URL повторно
+        url = f"http://{_stream_ip}:{STREAM_HTTP_PORT}"
+        http_post_json("/text_reply", {
+            "chat_id": chat_id,
+            "text": f"📺 Стриминг уже активен: {url}",
+            "device_id": DEVICE_ID,
+        })
+        return
+
+    _stream_ip = _get_local_ip()
+    _stream_stop_event = Event()
+
+    provider = _MjpegFrameProvider(
+        _stream_stop_event, STREAM_FPS, STREAM_WIDTH, STREAM_QUALITY
+    )
+    Thread(target=provider.run, daemon=True, name="stream-capture").start()
+    Thread(target=_run_http_server,
+           args=(provider, _stream_stop_event, _stream_ip),
+           daemon=True, name="stream-http").start()
+    Thread(target=_run_ws_server,
+           args=(_stream_stop_event,),
+           daemon=True, name="stream-ws").start()
+
+    url = f"http://{_stream_ip}:{STREAM_HTTP_PORT}"
+    log.info(f"Screen stream started: {url}")
+    http_post_json("/text_reply", {
+        "chat_id": chat_id,
+        "text": (
+            f"📺 Стриминг запущен!\n"
+            f"Открой в браузере на телефоне (в той же сети WiFi):\n{url}\n\n"
+            f"Для остановки: /stream_stop"
+        ),
+        "device_id": DEVICE_ID,
+    })
+
+
+def stop_screen_stream(chat_id: str):
+    """Останавливает WiFi-стриминг."""
+    global _stream_stop_event
+    if _stream_stop_event and not _stream_stop_event.is_set():
+        _stream_stop_event.set()
+        _stream_stop_event = None
+        log.info("Screen stream stopped")
+        http_post_json("/text_reply", {
+            "chat_id": chat_id,
+            "text": "⛔ Стриминг остановлен.",
+            "device_id": DEVICE_ID,
+        })
+    else:
+        http_post_json("/text_reply", {
+            "chat_id": chat_id,
+            "text": "ℹ️ Стриминг не был активен.",
+            "device_id": DEVICE_ID,
+        })
+
+
 # ─── Ban state ────────────────────────────────────────────────────────────────
 
 class BanState:
@@ -1865,6 +2311,12 @@ def handle_command(cmd: dict):
 
     elif name == "screenshot":
         threading.Thread(target=take_screenshot, args=(chat_id,), daemon=True).start()
+
+    elif name == "stream_start":
+        threading.Thread(target=start_screen_stream, args=(chat_id,), daemon=True).start()
+
+    elif name == "stream_stop":
+        threading.Thread(target=stop_screen_stream, args=(chat_id,), daemon=True).start()
 
     elif name in ("open_gallery", "open_camera"):
         open_file_picker(chat_id)
