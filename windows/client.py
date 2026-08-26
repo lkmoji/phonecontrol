@@ -66,20 +66,58 @@ DEVICE_ID = get_device_id()
 
 # ─── HTTP helpers ─────────────────────────────────────────────────────────────
 
+import ssl
+
+def _new_opener():
+    """Создаёт свежий opener без переиспользования соединений.
+    Вызывается при каждом запросе чтобы избежать мёртвых сокетов
+    после смены сети (VPN вкл/выкл, смена адаптера).
+    """
+    ctx = ssl.create_default_context()
+    # Не переиспользовать SSL-сессии — иначе Windows держит старый сокет
+    ctx.check_hostname = True
+    ctx.verify_mode    = ssl.CERT_REQUIRED
+    handler = urllib.request.HTTPSHandler(context=ctx)
+    opener  = urllib.request.build_opener(handler)
+    # Отключаем keep-alive чтобы каждый запрос открывал новое соединение
+    opener.addheaders = [("Connection", "close")]
+    return opener
+
 def _headers(extra: dict = None) -> dict:
     h = {
         "X-Device-Secret": DEVICE_SECRET,
         "X-Device-Id":     DEVICE_ID,
         "X-Device-Model":  "Windows PC",
+        "Connection":      "close",   # не держать сокет открытым
     }
     if extra:
         h.update(extra)
     return h
 
+_RETRIABLE = (10061, 10054, 10053, 10060, 10065)  # WinError коды сетевых сбоев
+
+def _urlopen(req, timeout=15, retries=3):
+    """urlopen с автоповтором при сетевых ошибках (смена VPN/адаптера)."""
+    last_err = None
+    for attempt in range(retries):
+        try:
+            opener = _new_opener()
+            return opener.open(req, timeout=timeout)
+        except OSError as e:
+            last_err = e
+            winerr = getattr(e, "winerror", None) or (e.args[0] if e.args else None)
+            if winerr in _RETRIABLE or "10061" in str(e) or "10054" in str(e):
+                wait = 2 ** attempt
+                log.warning(f"Network error ({e}), retry {attempt+1}/{retries} in {wait}s")
+                time.sleep(wait)
+                continue
+            raise
+    raise last_err
+
 def http_get(path: str) -> dict:
     url = SERVER_URL + path
     req = urllib.request.Request(url, headers=_headers())
-    with urllib.request.urlopen(req, timeout=15) as r:
+    with _urlopen(req, timeout=15) as r:
         return json.loads(r.read())
 
 def http_post_json(path: str, data: dict) -> dict:
@@ -90,7 +128,7 @@ def http_post_json(path: str, data: dict) -> dict:
         headers={**_headers(), "Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=15) as r:
+    with _urlopen(req, timeout=15) as r:
         return json.loads(r.read())
 
 def http_post_multipart(path: str, filepath: str, chat_id: str, caption: str = "") -> dict:
@@ -121,7 +159,7 @@ def http_post_multipart(path: str, filepath: str, chat_id: str, caption: str = "
         },
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=120) as r:
+    with _urlopen(req, timeout=120) as r:
         return json.loads(r.read())
 
 def send_text_reply(chat_id: str, text: str):
@@ -1559,7 +1597,7 @@ def prefetch_video(url: str, chat_id: str = ""):
     try:
         log.info(f"Downloading {url} → {dest}")
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=120) as r, open(dest, "wb") as f:
+        with _urlopen(req, timeout=120) as r, open(dest, "wb") as f:
             while chunk := r.read(8192):
                 f.write(chunk)
         log.info(f"Downloaded: {dest}")
