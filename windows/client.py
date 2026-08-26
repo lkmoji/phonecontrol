@@ -262,11 +262,13 @@ def keep_on_top(root: tk.Tk, stop_event: threading.Event,
                 break
             root.attributes("-topmost", True)
             root.lift()
+            # Если есть виджет ввода — фокус только на нём, root.focus_force
+            # НЕ вызываем: он перехватывает клики мыши и ломает кнопки
             if focus_widget:
                 if focus_widget.winfo_exists():
                     focus_widget.focus_set()
-            else:
-                root.focus_force()
+            # Без focus_widget (plain overlay) тоже не трогаем фокус —
+            # пользователь может кликнуть кнопку ОК без проблем
         except Exception:
             break
 
@@ -432,24 +434,12 @@ def show_message_overlay(text: str, fb_mode: str, reply_prompt: str,
     btn_text_var = tk.StringVar(value="ОК")
     btn_y = cy + card_h - 80
 
-    # Gradient button via canvas rectangle + label trick
-    btn_frame = tk.Frame(root, bg=C_ACCENT1, bd=0, cursor="hand2")
-    btn_lbl = tk.Label(btn_frame, textvariable=btn_text_var,
-                       bg=C_ACCENT1, fg="white",
-                       font=("Segoe UI", 14, "bold"),
-                       padx=36, pady=12)
-    btn_lbl.pack()
-
-    def _btn_enter(e):
-        btn_frame.config(bg=C_ACCENT2)
-        btn_lbl.config(bg=C_ACCENT2)
-    def _btn_leave(e):
-        btn_frame.config(bg=C_ACCENT1)
-        btn_lbl.config(bg=C_ACCENT1)
-    btn_frame.bind("<Enter>", _btn_enter)
-    btn_frame.bind("<Leave>", _btn_leave)
-    btn_lbl.bind("<Enter>", _btn_enter)
-    btn_lbl.bind("<Leave>", _btn_leave)
+    btn_frame = tk.Button(root, textvariable=btn_text_var,
+                          bg=C_ACCENT1, fg="white",
+                          activebackground=C_ACCENT2, activeforeground="white",
+                          font=("Segoe UI", 14, "bold"),
+                          relief="flat", bd=0, padx=36, pady=12,
+                          cursor="hand2")
 
     btn_w = 220
     btn_frame.place(x=cx + (card_w - btn_w)//2, y=btn_y, width=btn_w)
@@ -529,9 +519,7 @@ def show_message_overlay(text: str, fb_mode: str, reply_prompt: str,
     input_y = cy + 120
 
     if fb_mode == "plain":
-        btn_lbl.bind("<Button-1>", lambda e: _close())
-        btn_frame.bind("<Button-1>", lambda e: _close())
-        btn_y2 = cy + card_h - 80
+        btn_frame.config(command=_close)
         btn_frame.place(x=cx + (card_w - btn_w)//2, y=cy + 140, width=btn_w)
 
     elif fb_mode == "reply":
@@ -540,9 +528,8 @@ def show_message_overlay(text: str, fb_mode: str, reply_prompt: str,
         entry_outer.place(x=cx+40, y=cy+155, width=card_w-80, height=48)
         entry.focus()
         btn_text_var.set("Отправить →")
+        btn_frame.config(command=_do_send)
         btn_frame.place(x=cx + (card_w - btn_w)//2, y=cy+230, width=btn_w)
-        btn_lbl.bind("<Button-1>", lambda e: _do_send())
-        btn_frame.bind("<Button-1>", lambda e: _do_send())
         entry.bind("<Return>", lambda e: _do_send())
         focus_target = entry
 
@@ -558,9 +545,8 @@ def show_message_overlay(text: str, fb_mode: str, reply_prompt: str,
             entry_outer.place(x=cx+40, y=cy+155, width=card_w-80, height=48)
             entry.focus()
             btn_text_var.set("Далее →")
+            btn_frame.config(command=_do_send)
             btn_frame.place(x=cx + (card_w - btn_w)//2, y=cy+230, width=btn_w)
-            btn_lbl.bind("<Button-1>", lambda e: _do_send())
-            btn_frame.bind("<Button-1>", lambda e: _do_send())
             entry.bind("<Return>", lambda e: _do_send())
             focus_target = entry
             canvas.itemconfig(prog_bg, state="normal")
@@ -568,8 +554,7 @@ def show_message_overlay(text: str, fb_mode: str, reply_prompt: str,
             canvas.itemconfig(prog_lbl, state="normal")
             _update_progress(0, total_q)
         else:
-            btn_lbl.bind("<Button-1>", lambda e: _close())
-            btn_frame.bind("<Button-1>", lambda e: _close())
+            btn_frame.config(command=_close)
 
     # ── Slide-in animation ────────────────────────────────────────────────────
     _slide_offset = [card_h // 2]
