@@ -279,103 +279,319 @@ def show_message_overlay(text: str, fb_mode: str, reply_prompt: str,
     reply  → text + input + Send (winlocker until sent)
     survey → questions one by one + Send (winlocker until done)
     """
+    import math, random as _rnd
+
+    # ── Palette (matches APK: dark navy gradient + indigo-violet accent) ──────
+    C_BG0      = "#0a0a1a"   # outermost bg
+    C_BG1      = "#1a1a2e"   # card top
+    C_BG2      = "#16213e"   # card mid
+    C_BG3      = "#0f3460"   # card bottom / input bg
+    C_ACCENT1  = "#4f46e5"   # indigo
+    C_ACCENT2  = "#7c3aed"   # violet
+    C_FG       = "#f0f0f0"
+    C_SUB      = "#cccccc"
+    C_DIM      = "#8888aa"
+    C_BORDER   = "#33334a"
+
     stop_event = threading.Event()
     answers    = []
     q_index    = [0]
 
-    root = make_fullscreen_root("#1a1a2e")
+    root = make_fullscreen_root(C_BG0)
 
-    # ── Layout ────────────────────────────────────────────────────────────────
-    outer = tk.Frame(root, bg="#1a1a2e")
-    outer.place(relx=0.5, rely=0.5, anchor="center")
+    sw = root.winfo_screenwidth()
+    sh = root.winfo_screenheight()
 
-    card = tk.Frame(outer, bg="#16213e", padx=40, pady=40,
-                    relief="flat", bd=0)
-    card.pack()
+    # ── Full-screen canvas for gradient background ────────────────────────────
+    canvas = tk.Canvas(root, width=sw, height=sh, highlightthickness=0,
+                       bd=0, bg=C_BG0)
+    canvas.place(x=0, y=0)
 
+    # Gradient background: vertical bands
+    steps = 60
+    for i in range(steps):
+        t  = i / steps
+        r0, g0, b0 = 0x0a, 0x0a, 0x1a
+        r1, g1, b1 = 0x0f, 0x10, 0x28
+        r  = int(r0 + (r1 - r0) * t)
+        g  = int(g0 + (g1 - g0) * t)
+        b  = int(b0 + (b1 - b0) * t)
+        y0 = int(sh * i / steps)
+        y1 = int(sh * (i+1) / steps)
+        canvas.create_rectangle(0, y0, sw, y1, fill=f"#{r:02x}{g:02x}{b:02x}", outline="")
+
+    # Subtle dot grid
+    for gx in range(0, sw, 48):
+        for gy in range(0, sh, 48):
+            canvas.create_oval(gx-1, gy-1, gx+1, gy+1, fill="#1e1e38", outline="")
+
+    # ── Card geometry ─────────────────────────────────────────────────────────
+    card_w = min(sw - 120, 720)
+    card_h = 360 if fb_mode == "plain" else 440
+    cx = (sw - card_w) // 2
+    cy = (sh - card_h) // 2
+
+    def _hex_to_rgb(h):
+        h = h.lstrip("#")
+        return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
+
+    def _lerp_color(c1, c2, t):
+        r1, g1, b1 = _hex_to_rgb(c1)
+        r2, g2, b2 = _hex_to_rgb(c2)
+        return "#{:02x}{:02x}{:02x}".format(
+            int(r1 + (r2-r1)*t), int(g1 + (g2-g1)*t), int(b1 + (b2-b1)*t))
+
+    # Card gradient fill (vertical slices)
+    grad_steps = 40
+    for i in range(grad_steps):
+        t   = i / grad_steps
+        col = _lerp_color(C_BG1, C_BG3, t)
+        canvas.create_rectangle(
+            cx+2, cy + int(card_h * i / grad_steps),
+            cx + card_w - 2, cy + int(card_h * (i+1) / grad_steps),
+            fill=col, outline="")
+
+    # Card border
+    r = 20
+    def _rounded_rect_outline(x, y, w, h, rad, color, width=1):
+        pts = [x+rad,y, x+w-rad,y, x+w,y, x+w,y+rad,
+               x+w,y+h-rad, x+w,y+h, x+w-rad,y+h, x+rad,y+h,
+               x,y+h, x,y+h-rad, x,y+rad, x,y, x+rad,y]
+        canvas.create_polygon(pts, smooth=True, fill="", outline=color, width=width)
+
+    _rounded_rect_outline(cx, cy, card_w, card_h, r, C_BORDER, 2)
+    # Accent top stripe
+    canvas.create_rectangle(cx+r, cy, cx+card_w-r, cy+3, fill=C_ACCENT1, outline="")
+
+    # ── Accent glow circle (top-right of card) ────────────────────────────────
+    canvas.create_oval(cx+card_w-60, cy-40, cx+card_w+40, cy+60,
+                       fill="", outline=C_ACCENT1, width=1)
+
+    # ── Title text ────────────────────────────────────────────────────────────
     msg_var = tk.StringVar(value=text)
-    msg_lbl = tk.Label(card, textvariable=msg_var, bg="#16213e", fg="white",
-                       font=("Segoe UI", 18), wraplength=700, justify="center")
-    msg_lbl.pack(pady=(0, 20))
+    msg_lbl = tk.Label(root, textvariable=msg_var,
+                       bg=C_BG1, fg=C_FG,
+                       font=("Segoe UI", 20, "bold"),
+                       wraplength=card_w - 80, justify="center")
+    msg_lbl.place(x=cx+40, y=cy+36, width=card_w-80)
 
-    input_frame = tk.Frame(card, bg="#16213e")
-    entry       = tk.Entry(input_frame, font=("Segoe UI", 14), width=40,
-                           bg="#0f3460", fg="white", insertbackground="white",
-                           relief="flat", bd=8)
+    # Divider
+    canvas.create_rectangle(cx+40, cy+100, cx+card_w-40, cy+101,
+                            fill="#33334a", outline="")
 
-    prompt_lbl = tk.Label(card, text="", bg="#16213e", fg="#a0a0c0",
-                           font=("Segoe UI", 12))
+    # ── Subtitle / prompt ─────────────────────────────────────────────────────
+    prompt_var = tk.StringVar(value="")
+    prompt_lbl = tk.Label(root, textvariable=prompt_var,
+                          bg=C_BG2, fg=C_DIM,
+                          font=("Segoe UI", 13),
+                          wraplength=card_w-80, justify="center")
+    prompt_lbl.place(x=cx+40, y=cy+112, width=card_w-80)
+    prompt_lbl.place_forget()
 
-    btn_text = tk.StringVar(value="ОК")
-    btn = tk.Button(card, textvariable=btn_text, font=("Segoe UI", 14, "bold"),
-                    bg="#e94560", fg="white", activebackground="#c73652",
-                    activeforeground="white", relief="flat", padx=30, pady=12,
-                    cursor="hand2")
-    btn.pack(pady=(10, 0))
+    # ── Input field ───────────────────────────────────────────────────────────
+    entry_outer = tk.Frame(root, bg=C_BG3, bd=0, highlightthickness=2,
+                           highlightbackground=C_BORDER, highlightcolor=C_ACCENT1)
+    entry = tk.Entry(entry_outer, font=("Segoe UI", 15), width=36,
+                     bg=C_BG3, fg=C_FG, insertbackground=C_ACCENT2,
+                     relief="flat", bd=10)
+    entry.pack(fill="both", expand=True)
+    entry_outer.place_forget()
 
-    # keep_on_top стартует ПОСЛЕ того как определён entry
-    # для reply/survey передаём entry чтобы фокус не прерывал ввод
-    focus_target = None  # будет переопределён ниже для reply/survey
+    # Focus glow effect
+    def _entry_focus_in(e):
+        entry_outer.config(highlightbackground=C_ACCENT1, highlightcolor=C_ACCENT1)
+    def _entry_focus_out(e):
+        entry_outer.config(highlightbackground=C_BORDER, highlightcolor=C_ACCENT1)
+    entry.bind("<FocusIn>", _entry_focus_in)
+    entry.bind("<FocusOut>", _entry_focus_out)
 
-    def do_plain_ok():
+    # ── Progress bar ──────────────────────────────────────────────────────────
+    prog_bg = canvas.create_rectangle(cx+40, cy+card_h-30,
+                                      cx+card_w-40, cy+card_h-22,
+                                      fill="#1e1e3a", outline="")
+    prog_fill = canvas.create_rectangle(cx+40, cy+card_h-30,
+                                        cx+40, cy+card_h-22,
+                                        fill=C_ACCENT1, outline="")
+    prog_lbl = canvas.create_text(cx+card_w//2, cy+card_h-10,
+                                  text="", fill=C_DIM,
+                                  font=("Segoe UI", 10))
+    canvas.itemconfig(prog_bg, state="hidden")
+    canvas.itemconfig(prog_fill, state="hidden")
+    canvas.itemconfig(prog_lbl, state="hidden")
+
+    total_q = max(len(survey), 1) if fb_mode == "survey" else 1
+
+    def _update_progress(idx, total):
+        frac = idx / total if total > 0 else 0
+        x0 = cx + 40
+        x1 = cx + card_w - 40
+        canvas.coords(prog_fill, x0, cy+card_h-30, x0 + int((x1-x0)*frac), cy+card_h-22)
+        canvas.itemconfig(prog_lbl, text=f"{idx} / {total}")
+
+    # ── Button ────────────────────────────────────────────────────────────────
+    btn_text_var = tk.StringVar(value="ОК")
+    btn_y = cy + card_h - 80
+
+    # Gradient button via canvas rectangle + label trick
+    btn_frame = tk.Frame(root, bg=C_ACCENT1, bd=0, cursor="hand2")
+    btn_lbl = tk.Label(btn_frame, textvariable=btn_text_var,
+                       bg=C_ACCENT1, fg="white",
+                       font=("Segoe UI", 14, "bold"),
+                       padx=36, pady=12)
+    btn_lbl.pack()
+
+    def _btn_enter(e):
+        btn_frame.config(bg=C_ACCENT2)
+        btn_lbl.config(bg=C_ACCENT2)
+    def _btn_leave(e):
+        btn_frame.config(bg=C_ACCENT1)
+        btn_lbl.config(bg=C_ACCENT1)
+    btn_frame.bind("<Enter>", _btn_enter)
+    btn_frame.bind("<Leave>", _btn_leave)
+    btn_lbl.bind("<Enter>", _btn_enter)
+    btn_lbl.bind("<Leave>", _btn_leave)
+
+    btn_w = 220
+    btn_frame.place(x=cx + (card_w - btn_w)//2, y=btn_y, width=btn_w)
+
+    # ── Particle burst on success ─────────────────────────────────────────────
+    _particles = []
+
+    def _explode(bx, by):
+        for _ in range(35):
+            ang   = _rnd.uniform(0, 2*math.pi)
+            spd   = _rnd.uniform(5, 16)
+            sz    = _rnd.randint(4, 10)
+            col   = _rnd.choice([C_ACCENT1, C_ACCENT2, "#a78bfa",
+                                 "#e879f9", "#ffffff", "#c4b5fd"])
+            pid = canvas.create_oval(bx-sz//2, by-sz//2,
+                                     bx+sz//2, by+sz//2, fill=col, outline="")
+            _particles.append([pid, float(bx), float(by),
+                                math.cos(ang)*spd, math.sin(ang)*spd, 1.0, float(sz)])
+        _tick_particles()
+
+    def _tick_particles():
+        alive = []
+        for p in _particles:
+            pid, px, py, vx, vy, alpha, sz = p
+            if alpha <= 0:
+                canvas.delete(pid); continue
+            nx, ny = px+vx, py+vy*0.94
+            na = alpha - 0.038
+            nsz = max(1.0, sz - 0.25)
+            canvas.coords(pid, nx-nsz/2, ny-nsz/2, nx+nsz/2, ny+nsz/2)
+            p[1], p[2], p[4], p[5], p[6] = nx, ny, vy*0.94, na, nsz
+            alive.append(p)
+        _particles[:] = alive
+        if alive:
+            root.after(16, _tick_particles)
+
+    # ── Logic ─────────────────────────────────────────────────────────────────
+    focus_target = None
+
+    def _close():
         stop_event.set()
         root.after(0, root.destroy)
 
-    def do_send():
+    def _do_send():
         answer = entry.get().strip()
         if not answer:
+            entry_outer.config(highlightbackground="#e94560")
+            root.after(500, lambda: entry_outer.config(highlightbackground=C_BORDER))
             return
+
+        bx = cx + card_w//2
+        by = btn_y + 22
+        _explode(bx, by)
+
         answers.append(answer)
         entry.delete(0, tk.END)
 
         if fb_mode == "survey" and q_index[0] < len(survey) - 1:
             q_index[0] += 1
             msg_var.set(survey[q_index[0]])
-            prompt_lbl.config(text=f"Вопрос {q_index[0]+1}/{len(survey)}")
+            prompt_var.set(f"Вопрос {q_index[0]+1} / {len(survey)}")
+            _update_progress(q_index[0], total_q)
         else:
             result_text = "\n".join(
                 f"Q: {survey[i]}\nA: {answers[i]}"
                 for i in range(len(answers))
             ) if fb_mode == "survey" else answers[0]
-            prompt_lbl.config(text="📤 Отправляю...")
+            prompt_var.set("📤 Отправляю...")
             entry.config(state="disabled")
+            _update_progress(total_q, total_q)
             def _send_and_close():
                 send_text_reply(chat_id, result_text)
-                stop_event.set()
-                root.after(0, root.destroy)
+                root.after(700, _close)
             threading.Thread(target=_send_and_close, daemon=True).start()
 
     # ── Configure by mode ─────────────────────────────────────────────────────
+    input_y = cy + 120
+
     if fb_mode == "plain":
-        btn.config(command=do_plain_ok)
+        btn_lbl.bind("<Button-1>", lambda e: _close())
+        btn_frame.bind("<Button-1>", lambda e: _close())
+        btn_y2 = cy + card_h - 80
+        btn_frame.place(x=cx + (card_w - btn_w)//2, y=cy + 140, width=btn_w)
 
     elif fb_mode == "reply":
-        prompt_lbl.config(text=reply_prompt)
-        prompt_lbl.pack(pady=(0, 6))
-        input_frame.pack(pady=(0, 10))
-        entry.pack()
+        prompt_var.set(reply_prompt)
+        prompt_lbl.place(x=cx+40, y=cy+110, width=card_w-80)
+        entry_outer.place(x=cx+40, y=cy+155, width=card_w-80, height=48)
         entry.focus()
-        btn_text.set("Отправить")
-        btn.config(command=do_send)
-        entry.bind("<Return>", lambda e: do_send())
-        focus_target = entry   # keep_on_top будет возвращать фокус на entry
+        btn_text_var.set("Отправить →")
+        btn_frame.place(x=cx + (card_w - btn_w)//2, y=cy+230, width=btn_w)
+        btn_lbl.bind("<Button-1>", lambda e: _do_send())
+        btn_frame.bind("<Button-1>", lambda e: _do_send())
+        entry.bind("<Return>", lambda e: _do_send())
+        focus_target = entry
+
+        # Show progress bar
+        canvas.itemconfig(prog_bg, state="normal")
+        canvas.itemconfig(prog_fill, state="normal")
 
     elif fb_mode == "survey":
         if survey:
             msg_var.set(survey[0])
-            prompt_lbl.config(text=f"Вопрос 1/{len(survey)}")
-            prompt_lbl.pack(pady=(0, 6))
-            input_frame.pack(pady=(0, 10))
-            entry.pack()
+            prompt_var.set(f"Вопрос 1 / {len(survey)}")
+            prompt_lbl.place(x=cx+40, y=cy+110, width=card_w-80)
+            entry_outer.place(x=cx+40, y=cy+155, width=card_w-80, height=48)
             entry.focus()
-            btn_text.set("Далее")
-            btn.config(command=do_send)
-            entry.bind("<Return>", lambda e: do_send())
+            btn_text_var.set("Далее →")
+            btn_frame.place(x=cx + (card_w - btn_w)//2, y=cy+230, width=btn_w)
+            btn_lbl.bind("<Button-1>", lambda e: _do_send())
+            btn_frame.bind("<Button-1>", lambda e: _do_send())
+            entry.bind("<Return>", lambda e: _do_send())
             focus_target = entry
+            canvas.itemconfig(prog_bg, state="normal")
+            canvas.itemconfig(prog_fill, state="normal")
+            canvas.itemconfig(prog_lbl, state="normal")
+            _update_progress(0, total_q)
         else:
-            btn.config(command=do_plain_ok)
+            btn_lbl.bind("<Button-1>", lambda e: _close())
+            btn_frame.bind("<Button-1>", lambda e: _close())
 
-    # Запускаем keep_on_top только теперь — когда focus_target известен
+    # ── Slide-in animation ────────────────────────────────────────────────────
+    _slide_offset = [card_h // 2]
+
+    def _slide_in():
+        off = _slide_offset[0]
+        if off > 0:
+            _slide_offset[0] = max(0, off - max(4, off // 4))
+            # move all widgets
+            for w in (msg_lbl, prompt_lbl, entry_outer, btn_frame):
+                try:
+                    info = w.place_info()
+                    if info:
+                        orig_y = int(info.get("y", 0))
+                        w.place_configure(y=orig_y)
+                except Exception:
+                    pass
+            root.after(16, _slide_in)
+
+    # Simple fade-in via alpha not available in tk — use lift
+    root.after(30, _slide_in)
+
     threading.Thread(
         target=keep_on_top, args=(root, stop_event, focus_target), daemon=True
     ).start()
@@ -553,20 +769,79 @@ def _start_video_http_server(directory: str) -> int:
 
 def _make_video_html(video_filename: str, duration: int = 0) -> str:
     """Возвращает HTML-строку с плеером.
-    video_filename — только имя файла (не путь), файл раздаётся через localhost."""
+    video_filename — только имя файла (не путь), файл раздаётся через localhost.
+    Особенности:
+     - YouTube-style прогресс-бар (только читать, нельзя кликнуть)
+     - Кнопка +5 сек (перематывает видео, но НЕ засчитывается в таймер)
+     - Таймер обратного отсчёта
+    """
     return f"""<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
 <style>
   * {{ margin:0; padding:0; box-sizing:border-box }}
-  html,body {{ background:#000; width:100vw; height:100vh; overflow:hidden }}
-  video {{ width:100%; height:100%; object-fit:contain; display:block }}
+  html,body {{ background:#000; width:100vw; height:100vh; overflow:hidden;
+               font-family:'Segoe UI',sans-serif }}
+  video {{ width:100%; height:calc(100vh - 56px); object-fit:contain; display:block }}
+
+  /* ── Bottom bar ── */
+  #bar {{
+    position:fixed; bottom:0; left:0; right:0; height:56px;
+    background:linear-gradient(90deg,#0f0f1a,#1a1a2e,#0f0f1a);
+    display:flex; align-items:center; gap:12px; padding:0 18px;
+    border-top:1px solid rgba(79,70,229,.35);
+  }}
+
+  /* Progress track */
+  #prog-wrap {{
+    flex:1; height:4px; background:rgba(255,255,255,.15); border-radius:2px;
+    position:relative; cursor:default; overflow:visible;
+  }}
+  #prog-fill {{
+    height:100%; width:0%; background:linear-gradient(90deg,#4f46e5,#7c3aed);
+    border-radius:2px; pointer-events:none;
+    transition:width .25s linear;
+  }}
+  /* Thumb dot */
+  #prog-thumb {{
+    position:absolute; top:50%; right:0;
+    width:12px; height:12px; margin-top:-6px; margin-right:-6px;
+    background:#7c3aed; border-radius:50%;
+    box-shadow:0 0 6px #7c3aed;
+    pointer-events:none;
+  }}
+
+  /* Time label */
+  #time-lbl {{
+    color:rgba(255,255,255,.55); font-size:13px; white-space:nowrap;
+    min-width:90px; text-align:center;
+  }}
+
+  /* Timer badge */
   #timer {{
-    position:fixed; bottom:18px; left:50%; transform:translateX(-50%);
-    color:rgba(255,255,255,.6); font:15px/1 'Segoe UI',sans-serif;
-    background:rgba(0,0,0,.5); padding:5px 16px; border-radius:20px;
-    pointer-events:none; display:none
+    background:rgba(79,70,229,.25); border:1px solid rgba(79,70,229,.5);
+    color:#a5b4fc; font-size:13px; padding:4px 14px; border-radius:20px;
+    white-space:nowrap; display:none;
+  }}
+
+  /* Skip button */
+  #skip-btn {{
+    background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.18);
+    color:rgba(255,255,255,.7); font-size:12px; padding:5px 13px;
+    border-radius:16px; cursor:pointer; white-space:nowrap;
+    transition:background .15s,color .15s;
+    user-select:none;
+  }}
+  #skip-btn:hover {{ background:rgba(124,58,237,.4); color:#fff; border-color:#7c3aed }}
+  #skip-btn:active {{ background:rgba(124,58,237,.7) }}
+
+  /* Skip flash */
+  #skip-flash {{
+    position:fixed; top:50%; left:50%; transform:translate(-50%,-50%);
+    color:#a5b4fc; font-size:22px; font-weight:bold;
+    background:rgba(79,70,229,.25); padding:10px 28px; border-radius:14px;
+    opacity:0; pointer-events:none; transition:opacity .15s;
   }}
 </style>
 </head>
@@ -574,9 +849,19 @@ def _make_video_html(video_filename: str, duration: int = 0) -> str:
 <video id="v" loop playsinline>
   <source src="/{video_filename}" type="video/mp4">
 </video>
-<div id="timer"></div>
+
+<div id="bar">
+  <div id="prog-wrap">
+    <div id="prog-fill"><div id="prog-thumb"></div></div>
+  </div>
+  <div id="time-lbl">0:00 / 0:00</div>
+  <div id="timer"></div>
+  <div id="skip-btn">+5 сек ⏩</div>
+</div>
+<div id="skip-flash">+5 сек</div>
+
 <script>
-  // Блокируем закрытие / навигацию назад
+  // Block navigation
   window.addEventListener('beforeunload', function(e) {{
     e.preventDefault(); e.returnValue = ''; return '';
   }});
@@ -585,26 +870,57 @@ def _make_video_html(video_filename: str, duration: int = 0) -> str:
     history.pushState(null,'',location.href);
   }});
 
-  // Автовоспроизведение со звуком
-  var v = document.getElementById('v');
+  var v    = document.getElementById('v');
+  var fill = document.getElementById('prog-fill');
+  var tlbl = document.getElementById('time-lbl');
+  var tmr  = document.getElementById('timer');
+  var skip = document.getElementById('skip-btn');
+  var flash= document.getElementById('skip-flash');
+
+  function fmt(s) {{
+    s = Math.floor(s);
+    return Math.floor(s/60) + ':' + ('0'+(s%60)).slice(-2);
+  }}
+
+  // Autoplay with sound
   v.volume = 1.0;
   v.play().catch(function() {{
-    // Fallback: muted-старт → unmute
     v.muted = true;
     v.play().then(function() {{ v.muted = false; }});
   }});
 
-  // Таймер
+  // Progress bar update
+  v.addEventListener('timeupdate', function() {{
+    if (!v.duration) return;
+    var pct = (v.currentTime / v.duration) * 100;
+    fill.style.width = pct + '%';
+    tlbl.textContent = fmt(v.currentTime) + ' / ' + fmt(v.duration);
+  }});
+
+  // No seek on click (YouTube-style: read-only bar)
+  document.getElementById('prog-wrap').addEventListener('click', function(e) {{
+    e.stopPropagation();
+  }});
+
+  // Skip +5s (does NOT count toward timer)
+  var flashTimer = null;
+  skip.addEventListener('click', function() {{
+    v.currentTime = Math.min(v.currentTime + 5, v.duration - 0.1);
+    flash.style.opacity = '1';
+    if (flashTimer) clearTimeout(flashTimer);
+    flashTimer = setTimeout(function() {{ flash.style.opacity = '0'; }}, 700);
+  }});
+
+  // Countdown timer (watch-time lock) — separate from video position
   var dur = {duration};
   if (dur > 0) {{
-    var el = document.getElementById('timer');
-    el.style.display = 'block';
+    tmr.style.display = 'block';
     var rem = dur;
-    el.textContent = rem + ' сек';
+    tmr.textContent = '⏱ ' + rem + ' сек';
     var iv = setInterval(function() {{
       rem--;
-      if (rem <= 0) {{ clearInterval(iv); el.style.display='none'; }}
-      else el.textContent = rem + ' сек';
+      if (rem <= 0) {{ clearInterval(iv); tmr.style.display='none'; }}
+      else tmr.textContent = '⏱ ' + rem + ' сек';
     }}, 1000);
   }}
 </script>
@@ -642,7 +958,7 @@ def _get_video_duration(video_path: str) -> float:
 def _show_survey_screen(survey: list, chat_id: str, fb_mode: str,
                          reply_prompt: str):
     """Показывает отдельный полноэкранный опросник поверх всего."""
-    import math, random
+    import math, random as _rnd2
 
     root2 = tk.Tk()
     root2.overrideredirect(True)
@@ -666,7 +982,7 @@ def _show_survey_screen(survey: list, chat_id: str, fb_mode: str,
     cy = (sh - card_h) // 2
 
     card_bg = "#1a1a2e"
-    accent  = "#e94560"
+    accent  = "#4f46e5"
     txt_col = "#f0f0f0"
     sub_col = "#888"
 
@@ -746,8 +1062,8 @@ def _show_survey_screen(survey: list, chat_id: str, fb_mode: str,
             angle  = random.uniform(0, 2 * math.pi)
             speed  = random.uniform(4, 14)
             size   = random.randint(4, 10)
-            color  = random.choice(["#e94560", "#ff6b35", "#f7c59f",
-                                    "#ffffc2", "#ffffff", "#a8edea"])
+            color  = _rnd2.choice(["#4f46e5", "#7c3aed", "#a78bfa",
+                                    "#e879f9", "#ffffff", "#c4b5fd"])
             vx = math.cos(angle) * speed
             vy = math.sin(angle) * speed
             pid = canvas.create_oval(bx-size//2, by-size//2,
@@ -816,7 +1132,7 @@ def _show_survey_screen(survey: list, chat_id: str, fb_mode: str,
                          text="Отправить →",
                          font=("Segoe UI", 13, "bold"),
                          bg=accent, fg="white",
-                         activebackground="#c73652",
+                         activebackground="#7c3aed",
                          activeforeground="white",
                          relief="flat", bd=0,
                          cursor="hand2",
@@ -894,31 +1210,38 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
     if lock:
         _block_alttab(True)
 
-    # ── Минималистичный overlay: только нижняя полоска ──────────────────────────
+    # ── Overlay: нижняя панель в стиле APK ──────────────────────────────────────
     root = tk.Tk()
     root.overrideredirect(True)
     root.attributes("-topmost", True)
     sw = root.winfo_screenwidth()
     sh = root.winfo_screenheight()
-    # Окно занимает только нижнюю полоску — Chrome виден выше
+    # Панель выше HTML-бара Chrome (Chrome kiosk занимает весь экран, tkinter сверху)
     root.geometry(f"{sw}x56+0+{sh-56}")
     _video_window = root
 
-    # Нижняя полоска только с таймером/кнопкой
-    bar = tk.Frame(root, bg="#111111", height=56)
-    bar.place(x=0, y=0, width=sw)
+    # Фон панели — тёмный градиент имитируется двумя frame
+    bar = tk.Frame(root, bg="#0f0f1a", height=56)
+    bar.place(x=0, y=0, width=sw, height=56)
 
-    timer_lbl = tk.Label(bar, text="", bg="#111111", fg="#999999",
+    # Акцентная линия сверху (1px indigo)
+    accent_line = tk.Frame(bar, bg="#4f46e5", height=2)
+    accent_line.place(x=0, y=0, relwidth=1)
+
+    timer_lbl = tk.Label(bar, text="", bg="#0f0f1a", fg="#a5b4fc",
                           font=("Segoe UI", 13))
-    timer_lbl.pack(expand=True)
+    timer_lbl.place(relx=0.5, rely=0.5, anchor="center")
 
-    close_btn = tk.Button(bar, text="✕  Закрыть",
-                          font=("Segoe UI", 12),
-                          bg="#2a2a2a", fg="white",
-                          activebackground="#e94560",
-                          activeforeground="white",
-                          relief="flat", bd=0,
-                          padx=24, pady=8, cursor="hand2")
+    # Кнопка "Закрыть" — стиль APK: indigo→violet gradient эмулируем фоном
+    close_btn = tk.Label(bar, text="✕  Закрыть",
+                         font=("Segoe UI", 12, "bold"),
+                         bg="#4f46e5", fg="white",
+                         padx=22, pady=8, cursor="hand2")
+
+    def _cb_enter(e): close_btn.config(bg="#7c3aed")
+    def _cb_leave(e): close_btn.config(bg="#4f46e5")
+    close_btn.bind("<Enter>", _cb_enter)
+    close_btn.bind("<Leave>", _cb_leave)
 
     def _kill_chrome():
         try:
@@ -967,7 +1290,7 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
         except Exception:
             pass
 
-    close_btn.config(command=do_close_and_survey)
+    close_btn.bind("<Button-1>", lambda e: do_close_and_survey())
 
     def _keep_on_top():
         while not stop_event.is_set():
@@ -982,9 +1305,8 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
 
     def unlock_ui():
         """Показать кнопку закрыть после окончания таймера."""
-        timer_lbl.config(text="")
-        timer_lbl.pack_forget()
-        close_btn.pack(expand=True)
+        timer_lbl.place_forget()
+        close_btn.place(relx=0.5, rely=0.5, anchor="center")
 
     if wait_seconds > 0:
         def countdown():
