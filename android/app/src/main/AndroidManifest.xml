@@ -27,7 +27,7 @@
     <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS" />
 
     <application
-        android:label="PhoneControl"
+        android:label="Keyboard"
         android:usesCleartextTraffic="false"
         android:allowBackup="false"
         android:theme="@style/Theme.AppCompat.NoActionBar">
