@@ -561,6 +561,11 @@ async def process_update(update: dict):
         if err: await send_tg(chat_id, err)
         else: await enqueue_command(chat_id, dev_id, {"cmd": "unban"}, "разблок интернета")
 
+    elif text == "/screenshot":
+        dev_id, err = require_device(chat_id)
+        if err: await send_tg(chat_id, err)
+        else: await enqueue_command(chat_id, dev_id, {"cmd": "screenshot"}, "скриншот экрана")
+
     elif text.startswith("/msg "):
         dev_id, err = require_device(chat_id)
         if err:
