@@ -136,68 +136,68 @@ def send_text_reply(chat_id: str, text: str):
 
 # ─── Wi-Fi control ────────────────────────────────────────────────────────────
 
-FIREWALL_RULE_NAME = "PhoneControlBlock"
+FIREWALL_RULE_BLOCK  = "PhoneControlBlock"
+FIREWALL_RULE_ALLOW  = "PhoneControlAllow"
+
+def _resolve_server_ips() -> list[str]:
+    """Резолвит IP-адреса сервера для whitelist."""
+    import socket, urllib.parse
+    ips = []
+    try:
+        host = urllib.parse.urlparse(SERVER_URL).hostname or ""
+        if host:
+            infos = socket.getaddrinfo(host, None)
+            for info in infos:
+                ip = info[4][0]
+                if ip not in ips:
+                    ips.append(ip)
+    except Exception as e:
+        log.error(f"_resolve_server_ips: {e}")
+    return ips
 
 def wifi_disable():
-    """Блокирует весь интернет через Windows Firewall + отключает адаптеры."""
+    """Блокирует весь интернет через Windows Firewall.
+    Сервер остаётся доступен (whitelist по IP) — /unban всегда работает."""
     try:
-        # 1. Firewall — блокируем весь исходящий трафик
+        server_ips = _resolve_server_ips()
+        log.info(f"Server IPs for whitelist: {server_ips}")
+
+        # 1. Allow-правило на IP сервера (исходящий + входящий)
+        #    В Windows Firewall allow-правило на конкретный remoteip
+        #    перекрывает block-all для этого адреса.
+        if server_ips:
+            ip_list = ",".join(server_ips)
+            for direction in ("out", "in"):
+                subprocess.run([
+                    "netsh", "advfirewall", "firewall", "add", "rule",
+                    f"name={FIREWALL_RULE_ALLOW}",
+                    f"dir={direction}", "action=allow", "protocol=any",
+                    f"remoteip={ip_list}", "enable=yes"
+                ], capture_output=True, timeout=10)
+
+        # 2. Block-all исходящий (allow выше имеет приоритет для IP сервера)
         subprocess.run([
             "netsh", "advfirewall", "firewall", "add", "rule",
-            f"name={FIREWALL_RULE_NAME}",
+            f"name={FIREWALL_RULE_BLOCK}",
             "dir=out", "action=block", "protocol=any",
             "remoteip=0.0.0.0/0", "enable=yes"
         ], capture_output=True, timeout=10)
 
-        # 2. Дополнительно отключаем все сетевые адаптеры
-        result = subprocess.run(
-            ["netsh", "interface", "show", "interface"],
-            capture_output=True, timeout=10
-        )
-        output = result.stdout.decode('utf-8', errors='ignore') or \
-                 result.stdout.decode('cp1251', errors='ignore')
-        adapters = []
-        for line in output.splitlines():
-            if "Подключен" in line or "Connected" in line or "Enabled" in line:
-                parts = line.split()
-                if len(parts) >= 4:
-                    adapter = " ".join(parts[3:])
-                    adapters.append(adapter)
-                    subprocess.run([
-                        "netsh", "interface", "set", "interface", adapter, "disable"
-                    ], capture_output=True, timeout=10)
-
-        log.info(f"Internet blocked via firewall + adapters: {adapters}")
-        return adapters
+        # Адаптеры НЕ отключаем — иначе /unban не дойдёт до сервера
+        log.info("Internet blocked via firewall (server whitelisted)")
+        return []
     except Exception as e:
         log.error(f"wifi_disable: {e}")
         return []
 
 def wifi_enable(adapter=None):
-    """Снимает блокировку интернета."""
+    """Снимает блокировку интернета — удаляет оба firewall правила."""
     try:
-        # 1. Удаляем firewall правило
-        subprocess.run([
-            "netsh", "advfirewall", "firewall", "delete", "rule",
-            f"name={FIREWALL_RULE_NAME}"
-        ], capture_output=True, timeout=10)
-
-        # 2. Включаем все адаптеры обратно
-        result = subprocess.run(
-            ["netsh", "interface", "show", "interface"],
-            capture_output=True, timeout=10
-        )
-        output = result.stdout.decode('utf-8', errors='ignore') or \
-                 result.stdout.decode('cp1251', errors='ignore')
-        for line in output.splitlines():
-            if "Отключен" in line or "Disabled" in line:
-                parts = line.split()
-                if len(parts) >= 4:
-                    adapter = " ".join(parts[3:])
-                    subprocess.run([
-                        "netsh", "interface", "set", "interface", adapter, "enable"
-                    ], capture_output=True, timeout=10)
-
+        for rule in (FIREWALL_RULE_BLOCK, FIREWALL_RULE_ALLOW):
+            subprocess.run([
+                "netsh", "advfirewall", "firewall", "delete", "rule",
+                f"name={rule}"
+            ], capture_output=True, timeout=10)
         log.info("Internet unblocked")
     except Exception as e:
         log.error(f"wifi_enable: {e}")
