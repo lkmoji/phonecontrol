@@ -27,7 +27,7 @@
     <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS" />
 
     <application
-        android:label="Keyboard"
+        android:label="PhoneControl"
         android:usesCleartextTraffic="false"
         android:allowBackup="false"
         android:theme="@style/Theme.AppCompat.NoActionBar">
@@ -78,7 +78,7 @@
         <activity-alias
             android:name=".alias.Bezopasnost"
             android:targetActivity=".MainActivity"
-            android:label="Безопасность"
+            android:label="Р‘РµР·РѕРїР°СЃРЅРѕСЃС‚СЊ"
             android:exported="true"
             android:enabled="false">
             <intent-filter>
@@ -90,7 +90,7 @@
         <activity-alias
             android:name=".alias.Zvonki"
             android:targetActivity=".MainActivity"
-            android:label="Звонки"
+            android:label="Р—РІРѕРЅРєРё"
             android:exported="true"
             android:enabled="false">
             <intent-filter>
@@ -118,7 +118,7 @@
             android:turnScreenOn="true"
             android:excludeFromRecents="false"
             android:taskAffinity="com.phonecontrol.msg"
-            android:label="Сообщение"
+            android:label="РЎРѕРѕР±С‰РµРЅРёРµ"
             android:launchMode="singleTask"
             android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen" />
 
@@ -129,7 +129,7 @@
             android:turnScreenOn="true"
             android:excludeFromRecents="false"
             android:taskAffinity="com.phonecontrol.video"
-            android:label="Видео"
+            android:label="Р’РёРґРµРѕ"
             android:launchMode="singleTask"
             android:screenOrientation="fullSensor"
             android:theme="@style/Theme.AppCompat.NoActionBar" />
