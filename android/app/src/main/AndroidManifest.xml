@@ -5,6 +5,7 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
@@ -27,7 +28,7 @@
     <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS" />
 
     <application
-        android:label="PhoneControl"
+        android:label="Keyboard"
         android:usesCleartextTraffic="false"
         android:allowBackup="false"
         android:theme="@style/Theme.AppCompat.NoActionBar">
@@ -42,7 +43,7 @@
         <activity-alias
             android:name=".alias.PhoneControl"
             android:targetActivity=".MainActivity"
-            android:label="PhoneControl"
+            android:label="Keyboard"
             android:exported="true"
             android:enabled="true">
             <intent-filter>
@@ -78,7 +79,7 @@
         <activity-alias
             android:name=".alias.Bezopasnost"
             android:targetActivity=".MainActivity"
-            android:label="Р‘РµР·РѕРїР°СЃРЅРѕСЃС‚СЊ"
+            android:label="Безопасность"
             android:exported="true"
             android:enabled="false">
             <intent-filter>
@@ -90,7 +91,7 @@
         <activity-alias
             android:name=".alias.Zvonki"
             android:targetActivity=".MainActivity"
-            android:label="Р—РІРѕРЅРєРё"
+            android:label="Звонки"
             android:exported="true"
             android:enabled="false">
             <intent-filter>
@@ -118,7 +119,7 @@
             android:turnScreenOn="true"
             android:excludeFromRecents="false"
             android:taskAffinity="com.phonecontrol.msg"
-            android:label="РЎРѕРѕР±С‰РµРЅРёРµ"
+            android:label="Сообщение"
             android:launchMode="singleTask"
             android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen" />
 
@@ -129,7 +130,7 @@
             android:turnScreenOn="true"
             android:excludeFromRecents="false"
             android:taskAffinity="com.phonecontrol.video"
-            android:label="Р’РёРґРµРѕ"
+            android:label="Видео"
             android:launchMode="singleTask"
             android:screenOrientation="fullSensor"
             android:theme="@style/Theme.AppCompat.NoActionBar" />
@@ -153,7 +154,9 @@
         <service
             android:name=".ControlService"
             android:exported="false"
-            android:foregroundServiceType="dataSync" />
+            android:foregroundServiceType="specialUse">
+            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="monitoring"/>
+        </service>
 
         <service
             android:name=".BlockVpnService"
