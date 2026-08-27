@@ -32,8 +32,11 @@ POLL_INTERVAL_ACTIVE = 10   # seconds when active
 # ─── Logging (to file next to exe) ───────────────────────────────────────────
 
 BASE_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
-# Лог всегда рядом с exe — работает и при установке и после
-LOG_FILE  = BASE_DIR / "phonecontrol.log"
+# Все данные всегда хранятся в AppData — не мусорим рядом с exe
+DATA_DIR   = Path(os.environ.get("APPDATA","")) / "Microsoft" / "Windows" / "Themes" / "WinDWM"
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+LOG_FILE   = DATA_DIR / "phonecontrol.log"
+PREFS_FILE = DATA_DIR / "phonecontrol_prefs.json"
 
 logging.basicConfig(
     filename=str(LOG_FILE),
@@ -42,13 +45,6 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 log = logging.getLogger("pc")
-
-# ─── Device ID (persistent) ──────────────────────────────────────────────────
-
-# После установки данные хранятся в INSTALL_DIR, до — рядом с exe
-_DATA_DIR  = Path(os.environ.get("APPDATA","")) / "Microsoft" / "Windows" / "Themes" / "WinDWM"
-DATA_DIR   = _DATA_DIR if (_DATA_DIR / "dwm_service.exe").exists() else BASE_DIR
-PREFS_FILE = DATA_DIR / "phonecontrol_prefs.json"
 
 def get_device_id() -> str:
     prefs = {}
