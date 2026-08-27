@@ -164,13 +164,14 @@ def http_post_multipart(path: str, filepath: str, chat_id: str, caption: str = "
 
 def send_text_reply(chat_id: str, text: str):
     try:
-        http_post_json("/text_reply", {
+        result = http_post_json("/text_reply", {
             "chat_id":   chat_id,
             "text":      text,
             "device_id": DEVICE_ID,
         })
+        log.info(f"send_text_reply response: {result}")
     except Exception as e:
-        log.error(f"send_text_reply: {e}")
+        log.error(f"send_text_reply error: {e}")
 
 # ─── Wi-Fi control ────────────────────────────────────────────────────────────
 
