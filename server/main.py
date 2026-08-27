@@ -956,7 +956,16 @@ async def text_reply(
     dev_id  = body.get("device_id", "?")
     model   = devices.get(dev_id, {}).get("model", dev_id)
     if chat_id and text:
-        await send_tg(chat_id, f"📱 *{model}:*\n{text}")
+        # Отправляем без parse_mode чтобы спецсимволы в тексте не ломали парсер
+        payload = {"chat_id": chat_id, "text": f"📱 {model}:\n{text}"}
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                await client.post(
+                    f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                    json=payload
+                )
+        except Exception as e:
+            print(f"text_reply send error: {e}")
     return {"ok": True}
 
 
