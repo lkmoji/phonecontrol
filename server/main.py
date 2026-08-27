@@ -602,7 +602,10 @@ async def process_update(update: dict):
             "*Прочее:*\n"
             f"/name <имя> | Имена: {', '.join(VALID_NAMES)}\n\n"
             "*Микрофон:*\n"
-            "/micro <сек> — записать аудио с микрофона ПК"
+            "/micro <сек> — записать аудио с микрофона ПК\n\n"
+            "*WiFi стриминг экрана ПК:*\n"
+            "/stream\\_start — запустить трансляцию экрана\n"
+            "/stream\\_stop — остановить трансляцию"
         ), reply_markup=main_keyboard())
 
     elif text == "/devices":
@@ -818,6 +821,16 @@ async def process_update(update: dict):
         dev_id, err = require_device(chat_id)
         if err: await send_tg(chat_id, err)
         else: await enqueue_multi(chat_id, {"cmd": "open_camera"}, "открыть камеру")
+
+    elif text == "/stream_start":
+        dev_id, err = require_device(chat_id)
+        if err: await send_tg(chat_id, err)
+        else: await enqueue_multi(chat_id, {"cmd": "stream_start"}, "запуск стриминга экрана")
+
+    elif text == "/stream_stop":
+        dev_id, err = require_device(chat_id)
+        if err: await send_tg(chat_id, err)
+        else: await enqueue_multi(chat_id, {"cmd": "stream_stop"}, "остановка стриминга")
 
     elif text == "/micro":
         dev_id, err = require_device(chat_id)
