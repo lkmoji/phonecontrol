@@ -2011,8 +2011,12 @@ def start_screen_stream(chat_id: str):
     if not chat_id:
         log.error("stream_start: chat_id is empty, cannot send URL to Telegram!")
     send_text_reply(chat_id,
-        f"📺 Стриминг запущен!\n"
-        f"Открой в браузере на телефоне (в той же сети WiFi):\n{url}\n\n"
+        f"📺 Стриминг запущен!
+"
+        f"Открой в браузере на телефоне (в той же сети WiFi):
+{url}
+
+"
         f"Для остановки: /stream_stop"
     )
     log.info("stream URL sent")
