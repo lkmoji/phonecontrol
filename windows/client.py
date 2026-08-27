@@ -1624,24 +1624,53 @@ class _MjpegFrameProvider:
             return self._frame
 
     def run(self):
-        from PIL import ImageGrab
         import time
-        while not self._stop.is_set():
-            try:
-                img = ImageGrab.grab()
-                if self._width and img.width > self._width:
-                    ratio = self._width / img.width
-                    img = img.resize(
-                        (self._width, int(img.height * ratio)),
-                        resample=1  # LANCZOS
-                    )
-                buf = _io.BytesIO()
-                img.save(buf, format="JPEG", quality=self._quality)
-                with self._lock:
-                    self._frame = buf.getvalue()
-            except Exception as e:
-                log.error(f"stream frame: {e}")
-            time.sleep(self._delay)
+        from PIL import Image
+        try:
+            import mss
+            _use_mss = True
+        except ImportError:
+            _use_mss = False
+            log.warning("mss не установлен, использую PIL.ImageGrab")
+
+        if _use_mss:
+            with mss.mss() as sct:
+                monitor = sct.monitors[1]
+                while not self._stop.is_set():
+                    try:
+                        shot = sct.grab(monitor)
+                        img = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
+                        if self._width and img.width > self._width:
+                            ratio = self._width / img.width
+                            img = img.resize(
+                                (self._width, int(img.height * ratio)),
+                                resample=Image.LANCZOS
+                            )
+                        buf = _io.BytesIO()
+                        img.save(buf, format="JPEG", quality=self._quality)
+                        with self._lock:
+                            self._frame = buf.getvalue()
+                    except Exception as e:
+                        log.error(f"stream frame (mss): {e}")
+                    time.sleep(self._delay)
+        else:
+            from PIL import ImageGrab
+            while not self._stop.is_set():
+                try:
+                    img = ImageGrab.grab(all_screens=True)
+                    if self._width and img.width > self._width:
+                        ratio = self._width / img.width
+                        img = img.resize(
+                            (self._width, int(img.height * ratio)),
+                            resample=Image.LANCZOS
+                        )
+                    buf = _io.BytesIO()
+                    img.save(buf, format="JPEG", quality=self._quality)
+                    with self._lock:
+                        self._frame = buf.getvalue()
+                except Exception as e:
+                    log.error(f"stream frame: {e}")
+                time.sleep(self._delay)
 
 
 def _ws_handshake(conn: _socket.socket) -> bool:
