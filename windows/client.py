@@ -2011,13 +2011,9 @@ def start_screen_stream(chat_id: str):
     if not chat_id:
         log.error("stream_start: chat_id is empty, cannot send URL to Telegram!")
     send_text_reply(chat_id,
-        f"📺 Стриминг запущен!
-"
-        f"Открой в браузере на телефоне (в той же сети WiFi):
-{url}
-
-"
-        f"Для остановки: /stream_stop"
+        "📺 Стриминг запущен!\n"
+        f"Открой в браузере на телефоне (в той же сети WiFi):\n{url}\n\n"
+        "Для остановки: /stream_stop"
     )
     log.info("stream URL sent")
 
@@ -2534,6 +2530,13 @@ def print_uninstall_hint():
         "timeout /t 1 >nul\n"
         "\n"
         "echo Удаляем файлы...\n"
+        ":: Удаляем скачанные видео из assets\n"
+        f"if exist \"{RAW_VIDEO_DIR}\" (\n"
+        f"    del /f /q \"{RAW_VIDEO_DIR}\\*.mp4\" >nul 2>&1\n"
+        f"    del /f /q \"{RAW_VIDEO_DIR}\\*.mov\" >nul 2>&1\n"
+        f"    del /f /q \"{RAW_VIDEO_DIR}\\*.avi\" >nul 2>&1\n"
+        f"    del /f /q \"{RAW_VIDEO_DIR}\\*.mkv\" >nul 2>&1\n"
+        f")\n"
         ":: PowerShell удаляет папку через 3 сек после выхода bat\n"
         f"powershell -Command \"Start-Sleep 3; Remove-Item -Recurse -Force '{INSTALL_DIR}'\"\n"
         "\n"
