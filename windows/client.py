@@ -1986,13 +1986,8 @@ def start_screen_stream(chat_id: str):
     """Запускает WiFi-стриминг экрана ПК. Отправляет URL в чат."""
     global _stream_stop_event, _stream_ip
     if _stream_stop_event and not _stream_stop_event.is_set():
-        # Уже запущен — отправляем URL повторно
         url = f"http://{_stream_ip}:{STREAM_HTTP_PORT}"
-        http_post_json("/text_reply", {
-            "chat_id": chat_id,
-            "text": f"📺 Стриминг уже активен: {url}",
-            "device_id": DEVICE_ID,
-        })
+        send_text_reply(chat_id, f"📺 Стриминг уже активен: {url}")
         return
 
     _stream_ip = _get_local_ip()
@@ -2011,15 +2006,15 @@ def start_screen_stream(chat_id: str):
 
     url = f"http://{_stream_ip}:{STREAM_HTTP_PORT}"
     log.info(f"Screen stream started: {url}")
-    http_post_json("/text_reply", {
-        "chat_id": chat_id,
-        "text": (
-            f"📺 Стриминг запущен!\n"
-            f"Открой в браузере на телефоне (в той же сети WiFi):\n{url}\n\n"
-            f"Для остановки: /stream_stop"
-        ),
-        "device_id": DEVICE_ID,
-    })
+    log.info(f"Sending stream URL to chat_id={chat_id!r}")
+    if not chat_id:
+        log.error("stream_start: chat_id is empty, cannot send URL to Telegram!")
+    send_text_reply(chat_id,
+        f"📺 Стриминг запущен!\n"
+        f"Открой в браузере на телефоне (в той же сети WiFi):\n{url}\n\n"
+        f"Для остановки: /stream_stop"
+    )
+    log.info("stream URL sent")
 
 
 def stop_screen_stream(chat_id: str):
@@ -2029,17 +2024,9 @@ def stop_screen_stream(chat_id: str):
         _stream_stop_event.set()
         _stream_stop_event = None
         log.info("Screen stream stopped")
-        http_post_json("/text_reply", {
-            "chat_id": chat_id,
-            "text": "⛔ Стриминг остановлен.",
-            "device_id": DEVICE_ID,
-        })
+        send_text_reply(chat_id, "⛔ Стриминг остановлен.")
     else:
-        http_post_json("/text_reply", {
-            "chat_id": chat_id,
-            "text": "ℹ️ Стриминг не был активен.",
-            "device_id": DEVICE_ID,
-        })
+        send_text_reply(chat_id, "ℹ️ Стриминг не был активен.")
 
 
 # ─── Ban state ────────────────────────────────────────────────────────────────
