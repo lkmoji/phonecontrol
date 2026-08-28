@@ -211,12 +211,13 @@ def wifi_disable():
                 ], capture_output=True, timeout=10)
 
         # 2. Block-all исходящий (allow выше имеет приоритет для IP сервера)
-        subprocess.run([
+        r = subprocess.run([
             "netsh", "advfirewall", "firewall", "add", "rule",
             f"name={FIREWALL_RULE_BLOCK}",
             "dir=out", "action=block", "protocol=any",
-            "remoteip=0.0.0.0/0", "enable=yes"
+            "remoteip=any", "enable=yes"
         ], capture_output=True, timeout=10)
+        log.info(f"firewall block rule: rc={r.returncode} out={r.stdout.decode(errors='ignore').strip()!r} err={r.stderr.decode(errors='ignore').strip()!r}")
 
         # Адаптеры НЕ отключаем — иначе /unban не дойдёт до сервера
         log.info("Internet blocked via firewall (server whitelisted)")
