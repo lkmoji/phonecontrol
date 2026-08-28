@@ -191,35 +191,53 @@ def _resolve_server_ips() -> list[str]:
     return ips
 
 def wifi_disable():
-    """Блокирует весь интернет через Windows Firewall.
-    Сервер остаётся доступен (whitelist по IP) — /unban всегда работает."""
+    """Блокирует интернет через Windows Firewall (DNS + HTTP/HTTPS).
+    Сервер остаётся доступен по прямому IP — /unban всегда работает."""
     try:
         server_ips = _resolve_server_ips()
         log.info(f"Server IPs for whitelist: {server_ips}")
 
-        # 1. Allow-правило на IP сервера (исходящий + входящий)
-        #    В Windows Firewall allow-правило на конкретный remoteip
-        #    перекрывает block-all для этого адреса.
+        # Сначала чистим старые правила если есть
+        for rule in (FIREWALL_RULE_BLOCK, FIREWALL_RULE_ALLOW):
+            subprocess.run([
+                "netsh", "advfirewall", "firewall", "delete", "rule",
+                f"name={rule}"
+            ], capture_output=True, timeout=10)
+
+        # 1. Allow-правило на IP сервера — добавляем ПЕРВЫМ
+        #    В Windows Firewall при конфликте правил одного профиля
+        #    Allow на конкретный remoteip имеет приоритет над Block с remoteip=any
+        #    ТОЛЬКО если Allow добавлен раньше по порядку создания.
         if server_ips:
             ip_list = ",".join(server_ips)
             for direction in ("out", "in"):
-                subprocess.run([
+                r = subprocess.run([
                     "netsh", "advfirewall", "firewall", "add", "rule",
                     f"name={FIREWALL_RULE_ALLOW}",
-                    f"dir={direction}", "action=allow", "protocol=any",
-                    f"remoteip={ip_list}", "enable=yes"
+                    f"dir={direction}", "action=allow",
+                    "protocol=tcp", f"remoteip={ip_list}", "enable=yes"
                 ], capture_output=True, timeout=10)
+                log.info(f"firewall allow {direction}: rc={r.returncode} out={r.stdout.decode(errors='ignore').strip()!r}")
 
-        # 2. Block-all исходящий (allow выше имеет приоритет для IP сервера)
-        r = subprocess.run([
-            "netsh", "advfirewall", "firewall", "add", "rule",
-            f"name={FIREWALL_RULE_BLOCK}",
-            "dir=out", "action=block", "protocol=any",
-            "remoteip=any", "enable=yes"
-        ], capture_output=True, timeout=10)
-        log.info(f"firewall block rule: rc={r.returncode} out={r.stdout.decode(errors='ignore').strip()!r} err={r.stderr.decode(errors='ignore').strip()!r}")
+        # 2. Блокируем DNS (UDP 53) — браузер не сможет резолвить домены
+        for direction in ("out", "in"):
+            subprocess.run([
+                "netsh", "advfirewall", "firewall", "add", "rule",
+                f"name={FIREWALL_RULE_BLOCK}",
+                f"dir={direction}", "action=block",
+                "protocol=udp", "remoteport=53", "enable=yes"
+            ], capture_output=True, timeout=10)
 
-        # Адаптеры НЕ отключаем — иначе /unban не дойдёт до сервера
+        # 3. Блокируем HTTP и HTTPS исходящий (кроме IP сервера — он уже Allow)
+        for port in ("80", "443"):
+            r = subprocess.run([
+                "netsh", "advfirewall", "firewall", "add", "rule",
+                f"name={FIREWALL_RULE_BLOCK}",
+                "dir=out", "action=block",
+                "protocol=tcp", f"remoteport={port}", "enable=yes"
+            ], capture_output=True, timeout=10)
+            log.info(f"firewall block port {port}: rc={r.returncode} out={r.stdout.decode(errors='ignore').strip()!r}")
+
         log.info("Internet blocked via firewall (server whitelisted)")
         return []
     except Exception as e:
