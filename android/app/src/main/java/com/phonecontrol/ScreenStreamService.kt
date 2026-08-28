@@ -11,7 +11,9 @@ import android.media.Image
 import android.media.ImageReader
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import fi.iki.elonen.NanoHTTPD
@@ -37,7 +39,6 @@ class ScreenStreamService : Service() {
         var isRunning = false
         var streamUrl = ""
 
-        // Храним MediaProjection токен между запусками стрима
         var savedResultCode: Int = 0
         var savedResultData: Intent? = null
 
@@ -74,9 +75,7 @@ class ScreenStreamService : Service() {
                     return START_NOT_STICKY
                 }
 
-                // Сохраняем для следующего раза
                 saveProjection(code, data)
-
                 startForeground(NOTIF_ID, buildNotification())
                 startStream(code, data)
             }
@@ -97,6 +96,16 @@ class ScreenStreamService : Service() {
     private fun startStream(resultCode: Int, data: Intent) {
         val mgr = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         mediaProjection = mgr.getMediaProjection(resultCode, data)
+
+        // ── FIX: Android 14 требует callback ДО createVirtualDisplay ──────────
+        val mainHandler = Handler(Looper.getMainLooper())
+        mediaProjection!!.registerCallback(object : MediaProjection.Callback() {
+            override fun onStop() {
+                Log.i(TAG, "MediaProjection stopped")
+                stopStream()
+            }
+        }, mainHandler)
+        // ─────────────────────────────────────────────────────────────────────
 
         val dm = resources.displayMetrics
         val width  = 640
@@ -134,7 +143,7 @@ class ScreenStreamService : Service() {
                     bmp.recycle()
                     cropped.recycle()
 
-                    Thread.sleep(66) // ~15fps
+                    Thread.sleep(66)
                 } catch (e: Exception) {
                     Log.e(TAG, "Frame error: $e")
                     Thread.sleep(100)
@@ -142,15 +151,12 @@ class ScreenStreamService : Service() {
             }
         }.also { it.isDaemon = true; it.start() }
 
-        // HTTP MJPEG сервер
         httpServer = MjpegServer(STREAM_PORT, latestFrame, this)
         httpServer!!.start()
 
-        // WebSocket сервер для касаний
         wsServer = TouchWsServer(WS_PORT, this)
         wsServer!!.start()
 
-        // Определяем IP
         val ip = getLocalIpAddress()
         streamUrl = "http://$ip:$STREAM_PORT"
         isRunning = true
@@ -316,7 +322,6 @@ class MjpegServer(
     }
 
     private fun handleTouch(session: IHTTPSession): Response {
-        // REST fallback для касаний (WebSocket предпочтительнее)
         return newFixedLengthResponse("{\"ok\":true}")
     }
 
@@ -340,7 +345,6 @@ class MjpegServer(
 // ── WebSocket сервер для касаний ──────────────────────────────────────────────
 class TouchWsServer(private val wsPort: Int, private val ctx: Context) {
     private var serverSocket: ServerSocket? = null
-    private val clients = mutableListOf<Socket>()
     private var capturing = false
 
     fun start() {
@@ -356,12 +360,10 @@ class TouchWsServer(private val wsPort: Int, private val ctx: Context) {
     }
 
     private fun handleClient(socket: Socket) {
-        // Простой WebSocket handshake
         val input = socket.getInputStream()
         val output = socket.getOutputStream()
         val reader = input.bufferedReader()
 
-        // Читаем HTTP upgrade запрос
         val headers = mutableMapOf<String, String>()
         var line = reader.readLine()
         while (!line.isNullOrEmpty()) {
@@ -384,7 +386,6 @@ class TouchWsServer(private val wsPort: Int, private val ctx: Context) {
         )
         output.flush()
 
-        // Читаем WebSocket фреймы
         while (!socket.isClosed) {
             try {
                 val b0 = input.read()
@@ -406,32 +407,24 @@ class TouchWsServer(private val wsPort: Int, private val ctx: Context) {
 
     private fun handleMessage(json: JSONObject) {
         when (json.optString("type")) {
-            "capture" -> {
-                capturing = true
-                Log.i("TouchWsServer", "Capture started")
-            }
-            "release" -> {
-                capturing = false
-                Log.i("TouchWsServer", "Capture released")
-            }
+            "capture" -> { capturing = true;  Log.i("TouchWsServer", "Capture started") }
+            "release" -> { capturing = false; Log.i("TouchWsServer", "Capture released") }
             "tap" -> {
                 if (!capturing) return
-                val x = json.getDouble("x").toFloat()
-                val y = json.getDouble("y").toFloat()
-                StreamAccessibilityService.tap(x, y)
+                StreamAccessibilityService.tap(
+                    json.getDouble("x").toFloat(),
+                    json.getDouble("y").toFloat()
+                )
             }
             "swipe" -> {
                 if (!capturing) return
-                val x1 = json.getDouble("x1").toFloat()
-                val y1 = json.getDouble("y1").toFloat()
-                val x2 = json.getDouble("x2").toFloat()
-                val y2 = json.getDouble("y2").toFloat()
-                StreamAccessibilityService.swipe(x1, y1, x2, y2)
+                StreamAccessibilityService.swipe(
+                    json.getDouble("x1").toFloat(), json.getDouble("y1").toFloat(),
+                    json.getDouble("x2").toFloat(), json.getDouble("y2").toFloat()
+                )
             }
         }
     }
 
-    fun stop() {
-        serverSocket?.close()
-    }
+    fun stop() { serverSocket?.close() }
 }
