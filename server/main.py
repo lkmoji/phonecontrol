@@ -1061,3 +1061,28 @@ async def get_state(x_device_secret: Optional[str] = Header(None)):
 @app.get("/health")
 async def health():
     return {"status": "ok", "devices": len(devices)}
+
+
+# ─── SMS endpoint (Android → TG) ─────────────────────────────────────────────
+
+@app.post("/sms")
+async def receive_sms(
+    body: dict,
+    x_device_secret: Optional[str] = Header(None),
+):
+    if x_device_secret != DEVICE_SECRET:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    chat_id = body.get("chat_id") or ALLOWED_CHAT_ID
+    sender  = body.get("sender", "Неизвестно")
+    text    = body.get("body", "")
+    dev_id  = body.get("device_id", "?")
+    model   = devices.get(dev_id, {}).get("model", dev_id)
+
+    if chat_id and text:
+        await send_tg(
+            chat_id,
+            f"📩 *SMS* — `{sender}`\n_{model}_\n\n{text}"
+        )
+
+    return {"ok": True}
