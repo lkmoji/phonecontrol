@@ -125,6 +125,7 @@ def get_device(device_id: str) -> dict:
     if device_id not in devices:
         devices[device_id] = {
             "model": "Unknown",
+            "platform": "windows",
             "last_seen": None,
             "active": False,
             "pending_commands": [],
@@ -1072,7 +1073,8 @@ async def text_reply(
 async def poll(
     x_device_secret: Optional[str] = Header(None),
     x_device_id:     Optional[str] = Header(None),
-    x_device_model:  Optional[str] = Header(None),
+    x_device_model:    Optional[str] = Header(None),
+    x_device_platform: Optional[str] = Header(None),
 ):
     if x_device_secret != DEVICE_SECRET:
         print(f"403: got='{x_device_secret}' expected='{DEVICE_SECRET}'")
@@ -1083,6 +1085,8 @@ async def poll(
     d["last_seen"] = datetime.now()
     if x_device_model:
         d["model"] = x_device_model
+    if x_device_platform:
+        d["platform"] = x_device_platform
 
     if d["pending_commands"]:
         cmd    = d["pending_commands"].pop(0)
@@ -1240,3 +1244,29 @@ async def tmp_video(token: str, x_device_secret: Optional[str] = Header(None)):
         media_type="video/mp4",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'}
     )
+
+
+# ─── Audio upload (Android записал микрофон, шлёт файл) ──────────────────────
+
+@app.post("/audio_upload")
+async def audio_upload(
+    request: Request,
+    x_device_secret: Optional[str] = Header(None),
+):
+    if x_device_secret != DEVICE_SECRET:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    form = await request.form()
+    chat_id  = form.get("chat_id", ALLOWED_CHAT_ID)
+    dev_id   = form.get("device_id", "?")
+    audio    = form.get("audio")
+
+    if not audio or not chat_id:
+        raise HTTPException(status_code=400, detail="Missing fields")
+
+    data = await audio.read()
+    model = devices.get(dev_id, {}).get("model", dev_id)
+
+    await send_tg_file(chat_id, data, audio.filename or "record.m4a",
+                       caption=f"🎙 *{model}* — запись микрофона")
+    return {"ok": True}
