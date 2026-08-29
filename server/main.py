@@ -4,6 +4,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from typing import Optional
 import os
+import tempfile
 import asyncio
 import httpx
 from datetime import datetime
@@ -503,6 +504,48 @@ async def process_update(update: dict):
 
     if ALLOWED_CHAT_ID and chat_id != ALLOWED_CHAT_ID:
         await send_tg(chat_id, "⛔ Нет доступа.")
+        return
+
+    # ── Файл прикреплён к /addraw ─────────────────────────────────────────
+    doc = msg.get("document") or msg.get("video")
+    caption = msg.get("caption", "").strip()
+    if doc and caption.startswith("/addraw"):
+        file_id   = doc.get("file_id", "")
+        file_name = doc.get("file_name") or "video.mp4"
+        file_size = doc.get("file_size", 0)
+
+        if file_size > 20 * 1024 * 1024:
+            await send_tg(chat_id, "⚠️ Файл больше 20 MB — Telegram Bot API не позволяет скачать. Используй /addraw <url>.")
+            return
+
+        dev_id, err = require_device(chat_id)
+        if err:
+            await send_tg(chat_id, err)
+            return
+
+        await send_tg(chat_id, "📥 Скачиваю файл с Telegram...")
+        try:
+            async with httpx.AsyncClient(timeout=60) as hc:
+                r = await hc.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getFile?file_id={file_id}")
+                file_path = r.json()["result"]["file_path"]
+                r2 = await hc.get(f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}")
+                file_bytes = r2.content
+
+            import uuid, pathlib
+            token = uuid.uuid4().hex
+            tmp_dir = pathlib.Path(tempfile.gettempdir()) / "pc_uploads"
+            tmp_dir.mkdir(exist_ok=True)
+            tmp_path = tmp_dir / f"{token}_{file_name}"
+            tmp_path.write_bytes(file_bytes)
+            _temp_uploads[token] = str(tmp_path)
+
+            download_url = f"{SELF_URL}/tmp_video/{token}"
+            await enqueue_multi(chat_id,
+                {"cmd": "prefetch", "url": download_url, "filename": file_name},
+                "скачать видео")
+            await send_tg(chat_id, f"✅ Файл получен, отправлен на ПК. Появится в /lists после скачивания.")
+        except Exception as e:
+            await send_tg(chat_id, f"⚠️ Ошибка: {e}")
         return
 
     # ── Микрофон: ожидаем количество секунд ─────────────────────────────────
@@ -1168,3 +1211,32 @@ async def cmd_output(
         await send_tg(chat_id,
             f"💻 *{model}* — `{command}`\n\n```\n{text}\n```{suffix}")
     return {"ok": True}
+
+
+# ─── Temp video download (ПК скачивает файл, потом удаляем) ──────────────────
+
+@app.get("/tmp_video/{token}")
+async def tmp_video(token: str, x_device_secret: Optional[str] = Header(None)):
+    if x_device_secret != DEVICE_SECRET:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    import pathlib
+    path = _temp_uploads.get(token)
+    if not path or not pathlib.Path(path).exists():
+        raise HTTPException(status_code=404, detail="Not found")
+
+    data = pathlib.Path(path).read_bytes()
+    filename = pathlib.Path(path).name.split("_", 1)[-1]  # убираем token_ префикс
+
+    # Удаляем после отдачи
+    try:
+        pathlib.Path(path).unlink()
+        _temp_uploads.pop(token, None)
+    except Exception:
+        pass
+
+    from fastapi.responses import Response as FResponse
+    return FResponse(
+        content=data,
+        media_type="video/mp4",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    )
