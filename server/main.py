@@ -261,7 +261,11 @@ def devices_keyboard(chat_id: str = ""):
     rows = []
     selected = state["selected_device"].get(chat_id)
     for dev_id, d in devices.items():
-        status = "🟢" if device_online(dev_id) else "🔴"
+        online = device_online(dev_id)
+        # Скрываем офлайн устройства из списка
+        if not online:
+            continue
+        status = "🟢"
         if selected == "all":
             mark = "✓ "
         elif isinstance(selected, list) and dev_id in selected:
@@ -664,21 +668,25 @@ async def process_update(update: dict):
                       reply_markup=devices_keyboard(chat_id))
 
     elif text == "/on":
-        if not devices:
-            await send_tg(chat_id, "⚠️ Нет устройств.")
+        online_devs = [d for d in devices if device_online(d)]
+        if not online_devs:
+            await send_tg(chat_id, "⚠️ Нет онлайн устройств.")
             return
-        dev_id = selected_device_id(chat_id)
-        if not dev_id or dev_id not in devices:
-            if len(devices) == 1:
-                dev_id = next(iter(devices))
-                state["selected_device"][chat_id] = dev_id
+        ids = selected_device_ids(chat_id)
+        ids = [i for i in ids if i in devices and device_online(i)]
+        if not ids:
+            if len(online_devs) == 1:
+                ids = online_devs
+                state["selected_device"][chat_id] = online_devs[0]
             else:
                 await send_tg(chat_id, "⚠️ Выбери устройство /devices")
                 return
-        devices[dev_id]["active"] = True
-        devices[dev_id]["pending_commands"] = []
-        online = "🟢 онлайн" if device_online(dev_id) else "🔴 оффлайн"
-        await send_tg(chat_id, f"✅ *Включён*\n{devices[dev_id]['model']}: {online}")
+        lines = []
+        for dev_id in ids:
+            devices[dev_id]["active"] = True
+            devices[dev_id]["pending_commands"] = []
+            lines.append(f"{devices[dev_id]['model']}: 🟢 онлайн")
+        await send_tg(chat_id, "✅ *Включён* " + (f"{', '.join(d for d in [devices[i]['model'] for i in ids])}:\n" if len(ids) > 1 else "") + "\n".join(lines))
 
     elif text == "/off":
         dev_id, err = require_device(chat_id)
