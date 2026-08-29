@@ -158,7 +158,7 @@ def selected_device_ids(chat_id: str) -> list[str]:
     if sel is None:
         return []
     if sel == "all":
-        return list(devices.keys())
+        return [d for d in devices if device_online(d)]
     if isinstance(sel, list):
         return [d for d in sel if d in devices]
     return [sel] if sel in devices else []
@@ -172,18 +172,21 @@ def require_device(chat_id: str):
 
 def require_devices(chat_id: str):
     """Возвращает список device_id или строку с ошибкой."""
-    if not devices:
-        return "⚠️ Нет подключённых устройств."
+    # Скрываем офлайн устройства из рассмотрения
+    online_ids = [d for d in devices if device_online(d)]
+    if not online_ids:
+        return "⚠️ Нет онлайн устройств."
     ids = selected_device_ids(chat_id)
+    # Оставляем только онлайн из выбранных
+    ids = [i for i in ids if i in devices and device_online(i)]
     if not ids:
-        if len(devices) == 1:
-            dev_id = next(iter(devices))
+        if len(online_ids) == 1:
+            dev_id = online_ids[0]
             state["selected_device"][chat_id] = dev_id
             ids = [dev_id]
         else:
             return "⚠️ Выбери устройство командой /devices"
-    inactive = [i for i in ids if not devices[i]["active"]]
-    active   = [i for i in ids if devices[i]["active"]]
+    active = [i for i in ids if devices[i]["active"]]
     if not active:
         return "⚠️ Сначала включи режим командой /on"
     return active
