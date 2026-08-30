@@ -191,16 +191,34 @@ def _resolve_server_ips() -> list[str]:
     return ips
 
 def wifi_disable():
-    """Блокирует интернет через Windows Firewall (DNS + HTTP/HTTPS).
-    Сервер остаётся доступен — для него создаётся Allow-правило с явным
-    remoteport=80,443, которое по специфичности побеждает Block remoteip=any.
-
-    Логика приоритетов Windows Firewall (advfirewall):
-      - Block всегда побеждает Allow если у них одинаковая специфичность.
-      - Allow побеждает Block только если у Allow-правила более узкий scope
-        (конкретный remoteip И конкретный remoteport против Block с remoteip=any).
-      - Поэтому Allow-правило должно указывать И remoteip И remoteport.
+    """Блокирует интернет через Windows Firewall.
+    Блокирует весь исходящий TCP 80/443 и UDP 53, КРОМЕ IP сервера.
+    Использует remoteip-диапазоны в Block-правиле чтобы исключить сервер —
+    это надёжнее чем Allow+Block, т.к. не зависит от приоритетов.
     """
+    import ipaddress
+
+    def _ip_ranges_excluding(exclude_ips: list) -> str:
+        """Возвращает список IP-диапазонов покрывающих весь IPv4 кроме exclude_ips."""
+        if not exclude_ips:
+            return "0.0.0.0-255.255.255.255"
+        
+        excluded = sorted(set(ipaddress.IPv4Address(ip) for ip in exclude_ips))
+        ranges = []
+        start_ip = ipaddress.IPv4Address("0.0.0.0")
+        
+        for ex in excluded:
+            if start_ip < ex:
+                end_ip = ex - 1
+                ranges.append(f"{start_ip}-{end_ip}")
+            start_ip = ex + 1
+        
+        last = ipaddress.IPv4Address("255.255.255.255")
+        if start_ip <= last:
+            ranges.append(f"{start_ip}-{last}")
+        
+        return ",".join(ranges) if ranges else ""
+
     try:
         server_ips = _resolve_server_ips()
         log.info(f"Server IPs for whitelist: {server_ips}")
@@ -212,68 +230,43 @@ def wifi_disable():
                 f"name={rule}"
             ], capture_output=True, timeout=10)
 
-        if server_ips:
-            ip_list = ",".join(server_ips)
+        # Строим диапазоны всех IP кроме сервера
+        block_ranges = _ip_ranges_excluding(server_ips)
+        log.info(f"Block ranges (excluding server): {block_ranges[:100]}...")
 
-            # Allow: конкретный IP + конкретные порты (80 и 443) исходящие.
-            # Более специфичное правило — побеждает Block с remoteip=any.
+        if block_ranges:
+            # Block DNS (UDP 53) для всех кроме сервера
+            for direction in ("out", "in"):
+                r = subprocess.run([
+                    "netsh", "advfirewall", "firewall", "add", "rule",
+                    f"name={FIREWALL_RULE_BLOCK}",
+                    f"dir={direction}", "action=block",
+                    "protocol=udp", "remoteport=53",
+                    f"remoteip={block_ranges}",
+                    "enable=yes", "profile=any",
+                ], capture_output=True, timeout=10)
+                log.info(f"firewall block UDP 53 {direction}: rc={r.returncode}")
+
+            # Block HTTP/HTTPS для всех кроме сервера
             for port in ("80", "443"):
                 r = subprocess.run([
                     "netsh", "advfirewall", "firewall", "add", "rule",
-                    f"name={FIREWALL_RULE_ALLOW}",
-                    "dir=out", "action=allow",
-                    "protocol=tcp",
-                    f"remoteip={ip_list}",
-                    f"remoteport={port}",
-                    "enable=yes",
-                    "profile=any",
+                    f"name={FIREWALL_RULE_BLOCK}",
+                    "dir=out", "action=block",
+                    "protocol=tcp", f"remoteport={port}",
+                    f"remoteip={block_ranges}",
+                    "enable=yes", "profile=any",
                 ], capture_output=True, timeout=10)
-                log.info(f"firewall allow TCP {port}: rc={r.returncode} "
+                log.info(f"firewall block TCP {port}: rc={r.returncode} "
                          f"out={r.stdout.decode(errors='ignore').strip()!r}")
+        else:
+            log.warning("wifi_disable: no block ranges (server IP covers all?), skipping")
 
-            # Allow: DNS (UDP 53) до сервера — на случай если DNS сервера нужен
-            # (обычно нет, но пусть будет для надёжности)
-            r = subprocess.run([
-                "netsh", "advfirewall", "firewall", "add", "rule",
-                f"name={FIREWALL_RULE_ALLOW}",
-                "dir=out", "action=allow",
-                "protocol=udp",
-                f"remoteip={ip_list}",
-                "remoteport=53",
-                "enable=yes",
-                "profile=any",
-            ], capture_output=True, timeout=10)
-            log.info(f"firewall allow UDP 53 server: rc={r.returncode}")
-
-        # Block DNS (UDP 53) — браузер не сможет резолвить домены
-        for direction in ("out", "in"):
-            r = subprocess.run([
-                "netsh", "advfirewall", "firewall", "add", "rule",
-                f"name={FIREWALL_RULE_BLOCK}",
-                f"dir={direction}", "action=block",
-                "protocol=udp", "remoteport=53",
-                "enable=yes", "profile=any",
-            ], capture_output=True, timeout=10)
-            log.info(f"firewall block UDP 53 {direction}: rc={r.returncode}")
-
-        # Block HTTP/HTTPS исходящий (remoteip=any — менее специфично, чем Allow выше)
-        for port in ("80", "443"):
-            r = subprocess.run([
-                "netsh", "advfirewall", "firewall", "add", "rule",
-                f"name={FIREWALL_RULE_BLOCK}",
-                "dir=out", "action=block",
-                "protocol=tcp", f"remoteport={port}",
-                "enable=yes", "profile=any",
-            ], capture_output=True, timeout=10)
-            log.info(f"firewall block TCP {port}: rc={r.returncode} "
-                     f"out={r.stdout.decode(errors='ignore').strip()!r}")
-
-        log.info("Internet blocked via firewall (server whitelisted)")
+        log.info("Internet blocked via firewall (server whitelisted by exclusion)")
         return []
     except Exception as e:
         log.error(f"wifi_disable: {e}")
         return []
-
 def wifi_enable(adapter=None):
     """Снимает блокировку интернета — удаляет оба firewall правила."""
     try:
@@ -319,7 +312,7 @@ def set_volume(level: int):
 
 # ─── Winlocker base ───────────────────────────────────────────────────────────
 
-def make_fullscreen_root(bg: str = "#1a1a2e") -> tk.Tk:
+def make_fullscreen_root(bg: str = "#071a0f") -> tk.Tk:
     """Create a topmost fullscreen window that blocks Alt+F4 and other keys."""
     root = tk.Tk()
     root.configure(bg=bg)
@@ -462,7 +455,7 @@ def _run_glitch_then_show(callback):
     else:
         # Fallback: цветные полосы если скриншот не удался
         strip_h = sh // N_STRIPS
-        PALETTE = ["#1a1a2e", "#16213e", "#0f3460", "#0a0a1a"]
+        PALETTE = ["#071a0f", "#0d2b18", "#0f3320", "#04120a"]
         for i in range(N_STRIPS):
             y0 = i * strip_h
             sid = canvas.create_rectangle(0, y0, sw, y0 + strip_h,
@@ -517,9 +510,10 @@ def show_message_overlay(text: str, fb_mode: str, reply_prompt: str,
     if minimize:
         minimize_all()
         time.sleep(0.3)        # ждём пока окна свернутся
+        freeze_cursor()
         # Запускаем glitch, а потом уже собственно overlay
         _run_glitch_then_show(lambda: _show_message_overlay_impl(
-            text, fb_mode, reply_prompt, survey, chat_id, unfreeze_on_close=False))
+            text, fb_mode, reply_prompt, survey, chat_id, unfreeze_on_close=True))
         return
 
     _show_message_overlay_impl(text, fb_mode, reply_prompt, survey, chat_id,
@@ -532,23 +526,25 @@ def _show_message_overlay_impl(text: str, fb_mode: str, reply_prompt: str,
     """Внутренняя реализация — собственно tkinter-окно сообщения."""
     import math, random as _rnd
 
-    # ── Palette (matches APK: dark navy gradient + indigo-violet accent) ──────
-    C_BG0      = "#0a0a1a"   # outermost bg
-    C_BG1      = "#1a1a2e"   # card top
-    C_BG2      = "#16213e"   # card mid
-    C_BG3      = "#0f3460"   # card bottom / input bg
-    C_ACCENT1  = "#4f46e5"   # indigo
-    C_ACCENT2  = "#7c3aed"   # violet
-    C_FG       = "#f0f0f0"
-    C_SUB      = "#cccccc"
-    C_DIM      = "#8888aa"
-    C_BORDER   = "#33334a"
+    # ── Palette (MediumSpringGreen / SpringGreen / MediumSeaGreen / SeaGreen) ──
+    C_BG0      = "#071a0f"   # outermost bg — very dark green
+    C_BG1      = "#0d2b18"   # card top
+    C_BG2      = "#0f3320"   # card mid
+    C_BG3      = "#0a2416"   # card bottom / input bg
+    C_ACCENT1  = "#00FA9A"   # MediumSpringGreen
+    C_ACCENT2  = "#3CB371"   # MediumSeaGreen
+    C_ACCENT3  = "#2E8B57"   # SeaGreen
+    C_FG       = "#e8fff3"
+    C_SUB      = "#b0e8cc"
+    C_DIM      = "#5da87a"
+    C_BORDER   = "#1a4d30"
 
     stop_event = threading.Event()
     answers    = []
     q_index    = [0]
 
     root = make_fullscreen_root(C_BG0)
+    root.configure(bg=C_BG0)
 
     sw = root.winfo_screenwidth()
     sh = root.winfo_screenheight()
@@ -558,12 +554,12 @@ def _show_message_overlay_impl(text: str, fb_mode: str, reply_prompt: str,
                        bd=0, bg=C_BG0)
     canvas.place(x=0, y=0)
 
-    # Gradient background: vertical bands
+    # Gradient background: vertical bands — dark green theme
     steps = 60
     for i in range(steps):
         t  = i / steps
-        r0, g0, b0 = 0x0a, 0x0a, 0x1a
-        r1, g1, b1 = 0x0f, 0x10, 0x28
+        r0, g0, b0 = 0x07, 0x1a, 0x0f   # #071a0f
+        r1, g1, b1 = 0x04, 0x12, 0x0a   # #04120a
         r  = int(r0 + (r1 - r0) * t)
         g  = int(g0 + (g1 - g0) * t)
         b  = int(b0 + (b1 - b0) * t)
@@ -571,10 +567,38 @@ def _show_message_overlay_impl(text: str, fb_mode: str, reply_prompt: str,
         y1 = int(sh * (i+1) / steps)
         canvas.create_rectangle(0, y0, sw, y1, fill=f"#{r:02x}{g:02x}{b:02x}", outline="")
 
-    # Subtle dot grid
-    for gx in range(0, sw, 48):
-        for gy in range(0, sh, 48):
-            canvas.create_oval(gx-1, gy-1, gx+1, gy+1, fill="#1e1e38", outline="")
+    # Animated dot grid — пульсирующие точки в зелёных тонах
+    _dot_ids = []
+    _dot_base_colors = []
+    DOT_SPACING = 52
+    DOT_PALETTE = ["#0d2b18", "#112e1c", "#0f2919", "#162f1e"]
+    for gx in range(0, sw, DOT_SPACING):
+        for gy in range(0, sh, DOT_SPACING):
+            col = _rnd.choice(DOT_PALETTE)
+            did = canvas.create_oval(gx-1, gy-1, gx+1, gy+1, fill=col, outline="")
+            _dot_ids.append((did, gx, gy))
+            _dot_base_colors.append(col)
+
+    _dot_phase = [0.0]
+
+    def _animate_dots():
+        _dot_phase[0] += 0.06
+        ph = _dot_phase[0]
+        for idx, (did, gx, gy) in enumerate(_dot_ids):
+            wave = math.sin(ph + gx * 0.03 + gy * 0.02)
+            t_local = (wave + 1) / 2          # 0→1
+            r = int(0x07 + int((0x00 - 0x07) * t_local * 0.35))
+            g = int(0x1a + int((0xFA - 0x1a) * t_local * 0.25))
+            b = int(0x0f + int((0x9A - 0x0f) * t_local * 0.20))
+            sz = 1 + t_local * 1.2
+            canvas.coords(did, gx-sz, gy-sz, gx+sz, gy+sz)
+            canvas.itemconfig(did, fill=f"#{r:02x}{g:02x}{b:02x}")
+        try:
+            root.after(50, _animate_dots)
+        except Exception:
+            pass
+
+    root.after(100, _animate_dots)
 
     # ── Card geometry ─────────────────────────────────────────────────────────
     card_w = min(sw - 120, 720)
@@ -592,7 +616,7 @@ def _show_message_overlay_impl(text: str, fb_mode: str, reply_prompt: str,
         return "#{:02x}{:02x}{:02x}".format(
             int(r1 + (r2-r1)*t), int(g1 + (g2-g1)*t), int(b1 + (b2-b1)*t))
 
-    # Card gradient fill (vertical slices)
+    # Card gradient fill (vertical slices) — green tones
     grad_steps = 40
     for i in range(grad_steps):
         t   = i / grad_steps
@@ -602,7 +626,7 @@ def _show_message_overlay_impl(text: str, fb_mode: str, reply_prompt: str,
             cx + card_w - 2, cy + int(card_h * (i+1) / grad_steps),
             fill=col, outline="")
 
-    # Card border
+    # Card border — double ring for depth
     r = 20
     def _rounded_rect_outline(x, y, w, h, rad, color, width=1):
         pts = [x+rad,y, x+w-rad,y, x+w,y, x+w,y+rad,
@@ -610,30 +634,53 @@ def _show_message_overlay_impl(text: str, fb_mode: str, reply_prompt: str,
                x,y+h, x,y+h-rad, x,y+rad, x,y, x+rad,y]
         canvas.create_polygon(pts, smooth=True, fill="", outline=color, width=width)
 
+    _rounded_rect_outline(cx-1, cy-1, card_w+2, card_h+2, r+1, C_ACCENT3, 1)  # outer glow
     _rounded_rect_outline(cx, cy, card_w, card_h, r, C_BORDER, 2)
-    # Accent top stripe
-    canvas.create_rectangle(cx+r, cy, cx+card_w-r, cy+3, fill=C_ACCENT1, outline="")
+    # Accent top stripe — MediumSpringGreen
+    canvas.create_rectangle(cx+r, cy, cx+card_w-r, cy+4, fill=C_ACCENT1, outline="")
 
-    # ── Accent glow circle (top-right of card) ────────────────────────────────
-    canvas.create_oval(cx+card_w-60, cy-40, cx+card_w+40, cy+60,
-                       fill="", outline=C_ACCENT1, width=1)
+    # ── Animated spinning ring (top-right corner of card) ─────────────────────
+    ring_cx = cx + card_w - 38
+    ring_cy = cy + 38
+    ring_r  = 28
+    _ring_angle = [0.0]
+
+    def _draw_ring():
+        canvas.delete("ring_arc")
+        a = _ring_angle[0]
+        canvas.create_oval(ring_cx - ring_r, ring_cy - ring_r,
+                           ring_cx + ring_r, ring_cy + ring_r,
+                           outline=C_ACCENT3, width=2, tags="ring_arc")
+        canvas.create_arc(ring_cx - ring_r, ring_cy - ring_r,
+                          ring_cx + ring_r, ring_cy + ring_r,
+                          start=a, extent=120,
+                          outline=C_ACCENT1, width=3, style="arc", tags="ring_arc")
+        canvas.create_oval(ring_cx - 4, ring_cy - 4, ring_cx + 4, ring_cy + 4,
+                           fill=C_ACCENT1, outline="", tags="ring_arc")
+        _ring_angle[0] = (a + 4) % 360
+        try:
+            root.after(30, _draw_ring)
+        except Exception:
+            pass
+
+    root.after(60, _draw_ring)
 
     # ── Title text ────────────────────────────────────────────────────────────
     msg_var = tk.StringVar(value=text)
     msg_lbl = tk.Label(root, textvariable=msg_var,
                        bg=C_BG1, fg=C_FG,
-                       font=("Segoe UI", 20, "bold"),
+                       font=("Segoe UI", 21, "bold"),
                        wraplength=card_w - 80, justify="center")
     msg_lbl.place(x=cx+40, y=cy+36, width=card_w-80)
 
     # Divider
     canvas.create_rectangle(cx+40, cy+100, cx+card_w-40, cy+101,
-                            fill="#33334a", outline="")
+                            fill="#1a4d30", outline="")
 
     # ── Subtitle / prompt ─────────────────────────────────────────────────────
     prompt_var = tk.StringVar(value="")
     prompt_lbl = tk.Label(root, textvariable=prompt_var,
-                          bg=C_BG2, fg=C_DIM,
+                          bg=C_BG1, fg=C_DIM,
                           font=("Segoe UI", 13),
                           wraplength=card_w-80, justify="center")
     prompt_lbl.place(x=cx+40, y=cy+112, width=card_w-80)
@@ -652,14 +699,14 @@ def _show_message_overlay_impl(text: str, fb_mode: str, reply_prompt: str,
     def _entry_focus_in(e):
         entry_outer.config(highlightbackground=C_ACCENT1, highlightcolor=C_ACCENT1)
     def _entry_focus_out(e):
-        entry_outer.config(highlightbackground=C_BORDER, highlightcolor=C_ACCENT1)
+        entry_outer.config(highlightbackground=C_BORDER, highlightcolor=C_ACCENT2)
     entry.bind("<FocusIn>", _entry_focus_in)
     entry.bind("<FocusOut>", _entry_focus_out)
 
     # ── Progress bar ──────────────────────────────────────────────────────────
     prog_bg = canvas.create_rectangle(cx+40, cy+card_h-30,
                                       cx+card_w-40, cy+card_h-22,
-                                      fill="#1e1e3a", outline="")
+                                      fill="#0a2416", outline="")
     prog_fill = canvas.create_rectangle(cx+40, cy+card_h-30,
                                         cx+40, cy+card_h-22,
                                         fill=C_ACCENT1, outline="")
@@ -684,8 +731,8 @@ def _show_message_overlay_impl(text: str, fb_mode: str, reply_prompt: str,
     btn_y = cy + card_h - 80
 
     btn_frame = tk.Button(root, textvariable=btn_text_var,
-                          bg=C_ACCENT1, fg="white",
-                          activebackground=C_ACCENT2, activeforeground="white",
+                          bg=C_ACCENT2, fg="#071a0f",
+                          activebackground=C_ACCENT1, activeforeground="#071a0f",
                           font=("Segoe UI", 14, "bold"),
                           relief="flat", bd=0, padx=36, pady=12,
                           cursor="hand2")
@@ -701,8 +748,8 @@ def _show_message_overlay_impl(text: str, fb_mode: str, reply_prompt: str,
             ang   = _rnd.uniform(0, 2*math.pi)
             spd   = _rnd.uniform(5, 16)
             sz    = _rnd.randint(4, 10)
-            col   = _rnd.choice([C_ACCENT1, C_ACCENT2, "#a78bfa",
-                                 "#e879f9", "#ffffff", "#c4b5fd"])
+            col   = _rnd.choice([C_ACCENT1, C_ACCENT2, C_ACCENT3,
+                                 "#00FF7F", "#ffffff", "#b0e8cc"])
             pid = canvas.create_oval(bx-sz//2, by-sz//2,
                                      bx+sz//2, by+sz//2, fill=col, outline="")
             _particles.append([pid, float(bx), float(by),
@@ -737,7 +784,7 @@ def _show_message_overlay_impl(text: str, fb_mode: str, reply_prompt: str,
     def _do_send():
         answer = entry.get().strip()
         if not answer:
-            entry_outer.config(highlightbackground="#e94560")
+            entry_outer.config(highlightbackground="#ff4444")
             root.after(500, lambda: entry_outer.config(highlightbackground=C_BORDER))
             return
 
@@ -784,8 +831,6 @@ def _show_message_overlay_impl(text: str, fb_mode: str, reply_prompt: str,
         btn_frame.place(x=cx + (card_w - btn_w)//2, y=cy+230, width=btn_w)
         entry.bind("<Return>", lambda e: _do_send())
         focus_target = entry
-
-        # Show progress bar
         canvas.itemconfig(prog_bg, state="normal")
         canvas.itemconfig(prog_fill, state="normal")
 
@@ -815,7 +860,6 @@ def _show_message_overlay_impl(text: str, fb_mode: str, reply_prompt: str,
         off = _slide_offset[0]
         if off > 0:
             _slide_offset[0] = max(0, off - max(4, off // 4))
-            # move all widgets
             for w in (msg_lbl, prompt_lbl, entry_outer, btn_frame):
                 try:
                     info = w.place_info()
@@ -826,7 +870,6 @@ def _show_message_overlay_impl(text: str, fb_mode: str, reply_prompt: str,
                     pass
             root.after(16, _slide_in)
 
-    # Simple fade-in via alpha not available in tk — use lift
     root.after(30, _slide_in)
 
     threading.Thread(
@@ -834,6 +877,7 @@ def _show_message_overlay_impl(text: str, fb_mode: str, reply_prompt: str,
     ).start()
 
     root.mainloop()
+
 
 # ─── Video overlay ────────────────────────────────────────────────────────────
 
@@ -1004,13 +1048,11 @@ def _start_video_http_server(directory: str) -> int:
     return port
 
 
-def _make_video_html(video_filename: str, duration: int = 0) -> str:
-    """Возвращает HTML-строку с плеером.
-    video_filename — только имя файла (не путь), файл раздаётся через localhost.
-    Особенности:
-     - YouTube-style прогресс-бар (только читать, нельзя кликнуть)
-     - Кнопка +5 сек (перематывает видео, но НЕ засчитывается в таймер)
-     - Таймер обратного отсчёта
+def _make_video_html(video_filename: str, duration: int = 0,
+                     state_port: int = 0) -> str:
+    """Возвращает HTML-строку с чистым видео-плеером.
+    Прогресс-бар и кнопки управления — в tkinter-панели (надёжнее в kiosk).
+    state_port — порт локального state-сервера для polling из tkinter.
     """
     return f"""<!DOCTYPE html>
 <html>
@@ -1018,87 +1060,26 @@ def _make_video_html(video_filename: str, duration: int = 0) -> str:
 <meta charset="utf-8">
 <style>
   * {{ margin:0; padding:0; box-sizing:border-box }}
-  html,body {{ background:#000; width:100vw; height:100vh; overflow:hidden;
-               font-family:'Segoe UI',sans-serif }}
-  video {{ width:100%; height:calc(100vh - 56px); object-fit:contain; display:block }}
-
-  /* ── Bottom bar ── */
-  #bar {{
-    position:fixed; bottom:0; left:0; right:0; height:56px;
-    background:linear-gradient(90deg,#0f0f1a,#1a1a2e,#0f0f1a);
-    display:flex; align-items:center; gap:12px; padding:0 18px;
-    border-top:1px solid rgba(79,70,229,.35);
-  }}
-
-  /* Progress track */
-  #prog-wrap {{
-    flex:1; height:4px; background:rgba(255,255,255,.15); border-radius:2px;
-    position:relative; cursor:default; overflow:visible;
-  }}
-  #prog-fill {{
-    height:100%; width:0%; background:linear-gradient(90deg,#4f46e5,#7c3aed);
-    border-radius:2px; pointer-events:none;
-    transition:width .25s linear;
-  }}
-  /* Thumb dot */
-  #prog-thumb {{
-    position:absolute; top:50%; right:0;
-    width:12px; height:12px; margin-top:-6px; margin-right:-6px;
-    background:#7c3aed; border-radius:50%;
-    box-shadow:0 0 6px #7c3aed;
-    pointer-events:none;
-  }}
-
-  /* Time label */
-  #time-lbl {{
-    color:rgba(255,255,255,.55); font-size:13px; white-space:nowrap;
-    min-width:90px; text-align:center;
-  }}
-
-  /* Timer badge */
-  #timer {{
-    background:rgba(79,70,229,.25); border:1px solid rgba(79,70,229,.5);
-    color:#a5b4fc; font-size:13px; padding:4px 14px; border-radius:20px;
-    white-space:nowrap; display:none;
-  }}
-
-  /* Skip button */
-  #skip-btn {{
-    background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.18);
-    color:rgba(255,255,255,.7); font-size:12px; padding:5px 13px;
-    border-radius:16px; cursor:pointer; white-space:nowrap;
-    transition:background .15s,color .15s;
-    user-select:none;
-  }}
-  #skip-btn:hover {{ background:rgba(124,58,237,.4); color:#fff; border-color:#7c3aed }}
-  #skip-btn:active {{ background:rgba(124,58,237,.7) }}
-
-  /* Skip flash */
+  html,body {{ background:#000; width:100vw; height:100vh; overflow:hidden }}
+  video {{ width:100%; height:100vh; object-fit:contain; display:block }}
   #skip-flash {{
     position:fixed; top:50%; left:50%; transform:translate(-50%,-50%);
-    color:#a5b4fc; font-size:22px; font-weight:bold;
-    background:rgba(79,70,229,.25); padding:10px 28px; border-radius:14px;
-    opacity:0; pointer-events:none; transition:opacity .15s;
+    color:#00FA9A; font-size:28px; font-weight:bold; letter-spacing:2px;
+    background:rgba(0,250,154,.12); padding:14px 36px; border-radius:18px;
+    border:1.5px solid rgba(0,250,154,.35);
+    opacity:0; pointer-events:none; transition:opacity .12s;
   }}
 </style>
 </head>
 <body>
-<video id="v" loop playsinline>
-  <source src="/{video_filename}" type="video/mp4">
-</video>
-
-<div id="bar">
-  <div id="prog-wrap">
-    <div id="prog-fill"><div id="prog-thumb"></div></div>
-  </div>
-  <div id="time-lbl">0:00 / 0:00</div>
-  <div id="timer"></div>
-  <div id="skip-btn">+5 сек ⏩</div>
-</div>
-<div id="skip-flash">+5 сек</div>
-
+<video id="v" loop playsinline></video>
+<div id="skip-flash">⏩ +5 сек</div>
 <script>
-  // Block navigation
+  var v = document.getElementById('v');
+  var src = document.createElement('source');
+  src.src = '/{video_filename}';
+  src.type = 'video/mp4';
+  v.appendChild(src);
   window.addEventListener('beforeunload', function(e) {{
     e.preventDefault(); e.returnValue = ''; return '';
   }});
@@ -1106,60 +1087,48 @@ def _make_video_html(video_filename: str, duration: int = 0) -> str:
   window.addEventListener('popstate',function(){{
     history.pushState(null,'',location.href);
   }});
-
-  var v    = document.getElementById('v');
-  var fill = document.getElementById('prog-fill');
-  var tlbl = document.getElementById('time-lbl');
-  var tmr  = document.getElementById('timer');
-  var skip = document.getElementById('skip-btn');
-  var flash= document.getElementById('skip-flash');
-
-  function fmt(s) {{
-    s = Math.floor(s);
-    return Math.floor(s/60) + ':' + ('0'+(s%60)).slice(-2);
-  }}
-
-  // Autoplay with sound
   v.volume = 1.0;
   v.play().catch(function() {{
     v.muted = true;
     v.play().then(function() {{ v.muted = false; }});
   }});
-
-  // Progress bar update
-  v.addEventListener('timeupdate', function() {{
-    if (!v.duration) return;
-    var pct = (v.currentTime / v.duration) * 100;
-    fill.style.width = pct + '%';
-    tlbl.textContent = fmt(v.currentTime) + ' / ' + fmt(v.duration);
-  }});
-
-  // No seek on click (YouTube-style: read-only bar)
-  document.getElementById('prog-wrap').addEventListener('click', function(e) {{
-    e.stopPropagation();
-  }});
-
-  // Skip +5s (does NOT count toward timer)
+  var statePort = {state_port};
   var flashTimer = null;
-  skip.addEventListener('click', function() {{
-    v.currentTime = Math.min(v.currentTime + 5, v.duration - 0.1);
-    flash.style.opacity = '1';
-    if (flashTimer) clearTimeout(flashTimer);
-    flashTimer = setTimeout(function() {{ flash.style.opacity = '0'; }}, 700);
-  }});
-
-  // Countdown timer (watch-time lock) — separate from video position
-  var dur = {duration};
-  if (dur > 0) {{
-    tmr.style.display = 'block';
-    var rem = dur;
-    tmr.textContent = '⏱ ' + rem + ' сек';
-    var iv = setInterval(function() {{
-      rem--;
-      if (rem <= 0) {{ clearInterval(iv); tmr.style.display='none'; }}
-      else tmr.textContent = '⏱ ' + rem + ' сек';
-    }}, 1000);
+  var flash = document.getElementById('skip-flash');
+  function pollCommands() {{
+    if (!statePort) return;
+    fetch('http://127.0.0.1:' + statePort + '/cmd')
+      .then(function(r) {{ return r.json(); }})
+      .then(function(d) {{
+        if (d.seek_delta !== undefined) {{
+          v.currentTime = Math.min(v.currentTime + d.seek_delta, v.duration > 0 ? v.duration - 0.1 : v.currentTime + d.seek_delta);
+          flash.style.opacity = '1';
+          if (flashTimer) clearTimeout(flashTimer);
+          flashTimer = setTimeout(function() {{ flash.style.opacity='0'; }}, 600);
+        }}
+      }})
+      .catch(function() {{}});
+    setTimeout(pollCommands, 250);
   }}
+  setTimeout(pollCommands, 500);
+  function pushState() {{
+    if (!statePort || !v.duration) {{
+      setTimeout(pushState, 500);
+      return;
+    }}
+    var data = {{
+      currentTime: v.currentTime,
+      duration: v.duration,
+      paused: v.paused
+    }};
+    fetch('http://127.0.0.1:' + statePort + '/state', {{
+      method:'POST',
+      headers:{{'Content-Type':'application/json'}},
+      body: JSON.stringify(data)
+    }}).catch(function(){{}});
+    setTimeout(pushState, 500);
+  }}
+  setTimeout(pushState, 800);
 </script>
 </body>
 </html>"""
@@ -1405,16 +1374,60 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
     video_dir  = os.path.dirname(video_path)
     video_file = os.path.basename(video_path)
 
-    # Определяем длину видео
     video_duration = _get_video_duration(video_path)
     log.info(f"Video duration: {video_duration:.1f}s, requested: {duration}s")
 
-    # duration=0 → смотреть до конца видео
     wait_seconds = duration if duration > 0 else (int(video_duration) if video_duration > 0 else 0)
 
-    # Поднимаем HTTP сервер
+    # ── State/command сервер для связи HTML ↔ tkinter ─────────────────────────
+    import http.server as _hs, socketserver as _ss, json as _json2, urllib.parse as _up2
+    _video_state = {"currentTime": 0.0, "duration": 0.0, "paused": False}
+    _pending_seek = [None]
+
+    class _StateHandler(_hs.BaseHTTPRequestHandler):
+        def log_message(self, *a): pass
+        def _set_cors(self):
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        def do_OPTIONS(self):
+            self.send_response(204); self._set_cors(); self.end_headers()
+        def do_POST(self):
+            if self.path == "/state":
+                length = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(length)
+                try:
+                    data = _json2.loads(body)
+                    _video_state.update(data)
+                except Exception:
+                    pass
+                self.send_response(200); self._set_cors()
+                self.send_header("Content-Type","application/json"); self.end_headers()
+                self.wfile.write(b'{"ok":true}')
+            else:
+                self.send_response(404); self.end_headers()
+        def do_GET(self):
+            if self.path == "/cmd":
+                resp = {}
+                if _pending_seek[0] is not None:
+                    resp["seek_delta"] = _pending_seek[0]
+                    _pending_seek[0] = None
+                body = _json2.dumps(resp).encode()
+                self.send_response(200); self._set_cors()
+                self.send_header("Content-Type","application/json")
+                self.send_header("Content-Length", str(len(body))); self.end_headers()
+                self.wfile.write(body)
+            else:
+                self.send_response(404); self.end_headers()
+
+    _state_srv = _ss.TCPServer(("127.0.0.1", 0), _StateHandler)
+    _state_srv.allow_reuse_address = True
+    state_port = _state_srv.server_address[1]
+    threading.Thread(target=_state_srv.serve_forever, daemon=True).start()
+    log.info(f"Video state server on port {state_port}")
+
     port     = _start_video_http_server(video_dir)
-    html_str = _make_video_html(video_file, wait_seconds)
+    html_str = _make_video_html(video_file, wait_seconds, state_port)
 
     import tempfile as _tf
     html_fd, html_path = _tf.mkstemp(suffix=".html", dir=video_dir)
@@ -1423,7 +1436,6 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
     html_name = os.path.basename(html_path)
     video_url  = f"http://127.0.0.1:{port}/{html_name}"
 
-    # Убиваем старый Chrome
     subprocess.run(["taskkill", "/f", "/im", "chrome.exe"],
                    capture_output=True, timeout=5)
     time.sleep(0.8)
@@ -1431,103 +1443,158 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
     chrome_profile = _tf.mkdtemp(prefix="pc_chrome_")
     chrome = _find_chrome()
     _chrome_proc = subprocess.Popen([
-        chrome,
-        "--kiosk",
-        "--no-first-run",
-        "--disable-infobars",
-        "--disable-session-crashed-bubble",
-        "--noerrdialogs",
-        "--autoplay-policy=no-user-gesture-required",
-        "--disable-popup-blocking",
-        f"--user-data-dir={chrome_profile}",
-        video_url,
+        chrome, "--kiosk", "--no-first-run", "--disable-infobars",
+        "--disable-session-crashed-bubble", "--noerrdialogs",
+        "--autoplay-policy=no-user-gesture-required", "--disable-popup-blocking",
+        f"--user-data-dir={chrome_profile}", video_url,
     ])
     log.info(f"Chrome kiosk: {video_url}")
 
     if lock:
         _block_alttab(True)
 
-    # ── Overlay: нижняя панель в стиле APK ──────────────────────────────────────
+    # ── Overlay: нижняя панель в зелёном стиле ────────────────────────────────
+    PANEL_H  = 80
+    PROG_H   = 24
+    BTN_H    = PANEL_H - PROG_H
+
+    C_BG     = "#071a0f"
+    C_TRACK  = "#0d2b18"
+    C_FILL   = "#00FA9A"
+    C_FILL2  = "#3CB371"
+    C_THUMB  = "#00FF7F"
+    C_FG     = "#e8fff3"
+    C_DIM    = "#5da87a"
+    C_BTN    = "#3CB371"
+    C_BTN_HV = "#00FA9A"
+
     root = tk.Tk()
     root.overrideredirect(True)
     root.attributes("-topmost", True)
     sw = root.winfo_screenwidth()
     sh = root.winfo_screenheight()
-    # Панель выше HTML-бара Chrome (Chrome kiosk занимает весь экран, tkinter сверху)
-    root.geometry(f"{sw}x56+0+{sh-56}")
+    root.geometry(f"{sw}x{PANEL_H}+0+{sh - PANEL_H}")
     _video_window = root
 
-    # Фон панели — тёмный градиент имитируется двумя frame
-    bar = tk.Frame(root, bg="#0f0f1a", height=56)
-    bar.place(x=0, y=0, width=sw, height=56)
+    # ── Прогресс-строка ───────────────────────────────────────────────────────
+    prog_frame = tk.Frame(root, bg=C_BG, height=PROG_H)
+    prog_frame.place(x=0, y=0, width=sw, height=PROG_H)
 
-    # Акцентная линия сверху (1px indigo)
-    accent_line = tk.Frame(bar, bg="#4f46e5", height=2)
-    accent_line.place(x=0, y=0, relwidth=1)
+    time_lbl = tk.Label(prog_frame, text="0:00 / 0:00",
+                        bg=C_BG, fg=C_DIM, font=("Segoe UI", 10))
+    time_lbl.place(x=12, y=0, height=PROG_H)
 
-    timer_lbl = tk.Label(bar, text="", bg="#0f0f1a", fg="#a5b4fc",
-                          font=("Segoe UI", 13))
+    PROG_MARGIN_L = 92
+    PROG_MARGIN_R = 12
+    prog_canvas = tk.Canvas(prog_frame, bg=C_BG, highlightthickness=0, height=PROG_H)
+    prog_canvas.place(x=PROG_MARGIN_L, y=0,
+                      width=sw - PROG_MARGIN_L - PROG_MARGIN_R, height=PROG_H)
+
+    TRACK_Y = PROG_H // 2
+    TRACK_H = 6
+    prog_w = sw - PROG_MARGIN_L - PROG_MARGIN_R
+
+    prog_canvas.create_rectangle(0, TRACK_Y - TRACK_H//2, prog_w, TRACK_Y + TRACK_H//2,
+                                 fill=C_TRACK, outline="", tags="track")
+    prog_fill_id = prog_canvas.create_rectangle(
+        0, TRACK_Y - TRACK_H//2, 0, TRACK_Y + TRACK_H//2,
+        fill=C_FILL, outline="", tags="fill")
+    THUMB_R = 7
+    prog_thumb_id = prog_canvas.create_oval(
+        -THUMB_R, TRACK_Y - THUMB_R, THUMB_R, TRACK_Y + THUMB_R,
+        fill=C_THUMB, outline="", tags="thumb")
+
+    def _fmt_time(s):
+        s = max(0, int(s))
+        return f"{s//60}:{s%60:02d}"
+
+    def _update_prog_ui(cur, dur):
+        frac = (cur / dur) if dur > 0 else 0
+        fill_x = int(prog_w * frac)
+        prog_canvas.coords(prog_fill_id,
+                           0, TRACK_Y - TRACK_H//2, fill_x, TRACK_Y + TRACK_H//2)
+        prog_canvas.coords(prog_thumb_id,
+                           fill_x - THUMB_R, TRACK_Y - THUMB_R,
+                           fill_x + THUMB_R, TRACK_Y + THUMB_R)
+        time_lbl.config(text=f"{_fmt_time(cur)} / {_fmt_time(dur)}")
+
+    # ── Кнопочная строка ──────────────────────────────────────────────────────
+    btn_frame = tk.Frame(root, bg=C_BG, height=BTN_H)
+    btn_frame.place(x=0, y=PROG_H, width=sw, height=BTN_H)
+    tk.Frame(btn_frame, bg="#1a4d30", height=1).place(x=0, y=0, relwidth=1)
+
+    timer_lbl = tk.Label(btn_frame, text="", bg=C_BG, fg=C_FILL,
+                         font=("Segoe UI", 13, "bold"))
     timer_lbl.place(relx=0.5, rely=0.5, anchor="center")
 
-    # Кнопка "Закрыть" — стиль APK: indigo→violet gradient эмулируем фоном
-    close_btn = tk.Label(bar, text="✕  Закрыть",
+    skip_btn = tk.Label(btn_frame, text="⏩  +5 сек",
+                        font=("Segoe UI", 11, "bold"),
+                        bg="#0d2b18", fg=C_FILL,
+                        padx=18, pady=7, cursor="hand2", relief="flat")
+    close_btn = tk.Label(btn_frame, text="✕  Закрыть",
                          font=("Segoe UI", 12, "bold"),
-                         bg="#4f46e5", fg="white",
+                         bg=C_BTN, fg="#071a0f",
                          padx=22, pady=8, cursor="hand2")
 
-    def _cb_enter(e): close_btn.config(bg="#7c3aed")
-    def _cb_leave(e): close_btn.config(bg="#4f46e5")
+    def _skip_enter(e): skip_btn.config(bg="#162f1e", fg=C_BTN_HV)
+    def _skip_leave(e): skip_btn.config(bg="#0d2b18", fg=C_FILL)
+    skip_btn.bind("<Enter>", _skip_enter)
+    skip_btn.bind("<Leave>", _skip_leave)
+
+    def _cb_enter(e): close_btn.config(bg=C_BTN_HV)
+    def _cb_leave(e): close_btn.config(bg=C_BTN)
     close_btn.bind("<Enter>", _cb_enter)
     close_btn.bind("<Leave>", _cb_leave)
 
+    def _do_seek_5():
+        _pending_seek[0] = 5.0  # delta в секундах
+
+    skip_btn.bind("<Button-1>", lambda e: _do_seek_5())
+
     def _kill_chrome():
         try:
-            if _chrome_proc:
-                _chrome_proc.terminate()
+            if _chrome_proc: _chrome_proc.terminate()
         except Exception:
             pass
         subprocess.run(["taskkill", "/f", "/im", "chrome.exe"],
                        capture_output=True, timeout=5)
+        try: os.unlink(html_path)
+        except Exception: pass
         try:
-            os.unlink(html_path)
-        except Exception:
-            pass
-        try:
-            import shutil
-            shutil.rmtree(chrome_profile, ignore_errors=True)
-        except Exception:
-            pass
+            import shutil; shutil.rmtree(chrome_profile, ignore_errors=True)
+        except Exception: pass
+        try: _state_srv.shutdown()
+        except Exception: pass
 
     def do_close_and_survey():
-        """Закрывает видео, снимает хук, запускает опросник если нужно."""
         stop_event.set()
-        if lock:
-            _block_alttab(False)
+        if lock: _block_alttab(False)
         _kill_chrome()
         global _video_window
         _video_window = None
-        try:
-            root.destroy()
-        except Exception:
-            pass
-        # Открываем опросник/ответ в новом окне
+        try: root.destroy()
+        except Exception: pass
         if fb_mode in ("survey", "reply") and (survey or fb_mode == "reply"):
             _show_survey_screen(survey, chat_id, fb_mode, reply_prompt)
 
-    def do_close_plain():
-        """Просто закрыть, без опросника."""
-        stop_event.set()
-        if lock:
-            _block_alttab(False)
-        _kill_chrome()
-        global _video_window
-        _video_window = None
-        try:
-            root.destroy()
-        except Exception:
-            pass
-
     close_btn.bind("<Button-1>", lambda e: do_close_and_survey())
+
+    def _show_close_btn():
+        timer_lbl.place_forget()
+        close_btn.place(relx=0.98, rely=0.5, anchor="e")
+        skip_btn.place(x=16, rely=0.5, anchor="w")
+
+    skip_btn.place(x=16, rely=0.5, anchor="w")
+
+    # ── Polling прогресса ─────────────────────────────────────────────────────
+    def _poll_progress():
+        cur = _video_state.get("currentTime", 0)
+        dur = _video_state.get("duration", 0)
+        _update_prog_ui(cur, dur)
+        try: root.after(400, _poll_progress)
+        except Exception: pass
+
+    root.after(600, _poll_progress)
 
     def _keep_on_top():
         while not stop_event.is_set():
@@ -1540,29 +1607,22 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
                 break
     threading.Thread(target=_keep_on_top, daemon=True).start()
 
-    def unlock_ui():
-        """Показать кнопку закрыть после окончания таймера."""
-        timer_lbl.place_forget()
-        close_btn.place(relx=0.5, rely=0.5, anchor="center")
-
     if wait_seconds > 0:
         def countdown():
             time.sleep(1)
             for remaining in range(wait_seconds, 0, -1):
-                if stop_event.is_set():
-                    return
+                if stop_event.is_set(): return
                 try:
-                    root.after(0, lambda r=remaining: timer_lbl.config(
-                        text=f"⏱  {r} сек"))
-                except Exception:
-                    return
+                    mins, secs = divmod(remaining, 60)
+                    txt = f"⏱  {mins}:{secs:02d}" if mins else f"⏱  {secs} сек"
+                    root.after(0, lambda t=txt: timer_lbl.config(text=t))
+                except Exception: return
                 time.sleep(1)
             if not stop_event.is_set():
-                root.after(0, unlock_ui)
+                root.after(0, _show_close_btn)
         threading.Thread(target=countdown, daemon=True).start()
     else:
-        # Нет таймера и нет lock — сразу кнопка
-        root.after(500, unlock_ui)
+        root.after(500, _show_close_btn)
 
     root.mainloop()
 
@@ -2166,24 +2226,24 @@ class BanState:
 
     def _show_pw_screen(self):
         self._pw_stop = threading.Event()
-        root = make_fullscreen_root("#1a1a2e")
+        root = make_fullscreen_root("#071a0f")
         self._pw_root = root
 
-        card = tk.Frame(root, bg="#16213e", padx=50, pady=50)
+        card = tk.Frame(root, bg="#0d2b18", padx=50, pady=50)
         card.place(relx=0.5, rely=0.5, anchor="center")
 
-        tk.Label(card, text="🔒  Интернет заблокирован", bg="#16213e",
-                 fg="white", font=("Segoe UI", 20, "bold")).pack(pady=(0, 20))
+        tk.Label(card, text="🔒  Интернет заблокирован", bg="#0d2b18",
+                 fg="#e8fff3", font=("Segoe UI", 20, "bold")).pack(pady=(0, 20))
         tk.Label(card, text="Введи пароль для разблокировки:",
-                 bg="#16213e", fg="#a0a0c0", font=("Segoe UI", 13)).pack(pady=(0, 10))
+                 bg="#0d2b18", fg="#5da87a", font=("Segoe UI", 13)).pack(pady=(0, 10))
 
         entry = tk.Entry(card, font=("Segoe UI", 14), width=30,
-                         bg="#0f3460", fg="white", insertbackground="white",
+                         bg="#0a2416", fg="#e8fff3", insertbackground="#00FA9A",
                          relief="flat", bd=8, show="•")
         entry.pack(pady=(0, 10))
         entry.focus()
 
-        err_lbl = tk.Label(card, text="", bg="#16213e", fg="#e94560",
+        err_lbl = tk.Label(card, text="", bg="#0d2b18", fg="#ff4444",
                            font=("Segoe UI", 12))
         err_lbl.pack()
 
@@ -2196,7 +2256,7 @@ class BanState:
 
         btn = tk.Button(card, text="Разблокировать",
                         font=("Segoe UI", 13, "bold"),
-                        bg="#e94560", fg="white", relief="flat",
+                        bg="#3CB371", fg="#071a0f", relief="flat",
                         padx=25, pady=10, cursor="hand2", command=attempt)
         btn.pack(pady=(10, 0))
         entry.bind("<Return>", lambda e: attempt())
