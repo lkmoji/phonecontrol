@@ -509,11 +509,10 @@ def show_message_overlay(text: str, fb_mode: str, reply_prompt: str,
 
     if minimize:
         minimize_all()
-        time.sleep(0.3)        # ждём пока окна свернутся
-        freeze_cursor()
-        # Запускаем glitch, а потом уже собственно overlay
+        time.sleep(0.3)
+        # freeze_cursor убран — мышка НЕ замораживается
         _run_glitch_then_show(lambda: _show_message_overlay_impl(
-            text, fb_mode, reply_prompt, survey, chat_id, unfreeze_on_close=True))
+            text, fb_mode, reply_prompt, survey, chat_id, unfreeze_on_close=False))
         return
 
     _show_message_overlay_impl(text, fb_mode, reply_prompt, survey, chat_id,
