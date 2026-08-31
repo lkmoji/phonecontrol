@@ -257,6 +257,12 @@ def video_lock_keyboard():
         {"text": "🔒 Заблокировать выход", "callback_data": "vlock_yes"},
     ]]}
 
+def video_minimize_keyboard():
+    return {"inline_keyboard": [[
+        {"text": "🖥 Свернуть всё + эффект", "callback_data": "vmsg_minimize_yes"},
+        {"text": "▶️ Просто показать",        "callback_data": "vmsg_minimize_no"},
+    ]]}
+
 def devices_keyboard(chat_id: str = ""):
     rows = []
     selected = state["selected_device"].get(chat_id)
@@ -293,6 +299,7 @@ async def start_video_flow(chat_id: str, video_cmd: str, video_num: int = 0, vid
         "lock": False,
         "duration": 0,
         "fb_mode": "plain",
+        "minimize": False,
     }
     name = f"video{video_num}" if video_num else (f"raw{raw_num}" if raw_num else "raw видео")
     await send_tg(chat_id,
@@ -387,19 +394,10 @@ async def process_callback(callback: dict):
             await send_tg(chat_id, "⚠️ Список вопросов пуст. Добавь через /addq <вопрос>")
             return
 
-        if msess["fb_mode"] == "plain":
-            msess["step"] = "minimize"
-            await send_tg(chat_id, "🖥 Свернуть все окна перед показом?",
-                          reply_markup=msg_minimize_keyboard())
-        else:
-            dev_id = msess["dev_id"]
-            cmd = {"cmd": "show_message", "text": msess["text"], "fb_mode": msess["fb_mode"]}
-            if msess["fb_mode"] == "survey":
-                build_survey_cmd(cmd)
-            if msess["fb_mode"] == "reply":
-                cmd["reply_prompt"] = "✏️ Напиши ответ:"
-            state["msg_sessions"].pop(chat_id, None)
-            await enqueue_multi(chat_id, cmd, "сообщение")
+        # Все режимы спрашивают про minimize/эффект
+        msess["step"] = "minimize"
+        await send_tg(chat_id, "🖥 Свернуть все окна перед показом?",
+                      reply_markup=msg_minimize_keyboard())
         return
 
     if msess and msess["step"] == "minimize" and data in ("msg_minimize_yes", "msg_minimize_no"):
@@ -409,9 +407,13 @@ async def process_callback(callback: dict):
         cmd = {
             "cmd": "show_message",
             "text": msess["text"],
-            "fb_mode": "plain",
+            "fb_mode": msess["fb_mode"],
             "minimize": msess["minimize"],
         }
+        if msess["fb_mode"] == "survey":
+            build_survey_cmd(cmd)
+        if msess["fb_mode"] == "reply":
+            cmd["reply_prompt"] = "✏️ Напиши ответ:"
         state["msg_sessions"].pop(chat_id, None)
         await enqueue_multi(chat_id, cmd, "сообщение")
         return
@@ -463,6 +465,40 @@ async def process_callback(callback: dict):
             await answer_callback(cb_id, "🔒" if vsess["lock"] else "🔓")
             await send_tg(chat_id,
                 f"⏱ Сколько секунд обязательно смотреть? _(0 = смотреть видео до конца)_")
+            return
+
+        if vsess["step"] == "minimize" and data in ("vmsg_minimize_yes", "vmsg_minimize_no"):
+            vsess["minimize"] = (data == "vmsg_minimize_yes")
+            vsess["step"] = "done"
+            state["video_sessions"].pop(chat_id, None)
+            await answer_callback(cb_id)
+
+            dev_id, err = require_device(chat_id)
+            if err:
+                await send_tg(chat_id, err)
+                return
+
+            lock_str = "🔒 заблокирован" if vsess["lock"] else "🔓 без блокировки"
+            duration = vsess["duration"]
+            dur_str  = f"{duration} сек" if duration > 0 else ("бесконечно" if vsess["lock"] else "без ограничения")
+            await send_tg(chat_id, f"✅ Запускаю видео\nВыход: {lock_str}\nОбязательное время: {dur_str}")
+
+            cmd = {"cmd": vsess["video_cmd"], "lock": vsess["lock"],
+                   "duration": duration, "fb_mode": vsess["fb_mode"],
+                   "minimize": vsess["minimize"]}
+            if vsess["video_cmd"] == "video":
+                cmd["num"] = vsess["video_num"]
+                desc = f"video{vsess['video_num']}"
+            else:
+                cmd["raw_num"] = vsess.get("raw_num", 0)
+                desc = f"raw{vsess.get('raw_num', '?')}"
+
+            if vsess["fb_mode"] == "survey":
+                build_survey_cmd(cmd)
+            elif vsess["fb_mode"] == "reply":
+                cmd["reply_prompt"] = "✏️ Напиши ответ:"
+
+            await enqueue_multi(chat_id, cmd, desc)
             return
 
     # ── Микрофон ──────────────────────────────────────────────────────────────
@@ -582,33 +618,9 @@ async def process_update(update: dict):
             return
         duration = int(text)
         vsess["duration"] = duration
-        vsess["step"] = "done"
-        state["video_sessions"].pop(chat_id, None)
-
-        dev_id, err = require_device(chat_id)
-        if err:
-            await send_tg(chat_id, err)
-            return
-
-        lock_str = "🔒 заблокирован" if vsess["lock"] else "🔓 без блокировки"
-        dur_str  = f"{duration} сек" if duration > 0 else ("бесконечно" if vsess["lock"] else "без ограничения")
-        await send_tg(chat_id, f"✅ Запускаю видео\nВыход: {lock_str}\nОбязательное время: {dur_str}")
-
-        cmd = {"cmd": vsess["video_cmd"], "lock": vsess["lock"],
-               "duration": duration, "fb_mode": vsess["fb_mode"]}
-        if vsess["video_cmd"] == "video":
-            cmd["num"] = vsess["video_num"]
-            desc = f"video{vsess['video_num']}"
-        else:
-            cmd["raw_num"] = vsess.get("raw_num", 0)
-            desc = f"raw{vsess.get('raw_num', '?')}"
-
-        if vsess["fb_mode"] == "survey":
-            build_survey_cmd(cmd)
-        elif vsess["fb_mode"] == "reply":
-            cmd["reply_prompt"] = "✏️ Напиши ответ:"
-
-        await enqueue_multi(chat_id, cmd, desc)
+        vsess["step"] = "minimize"
+        await send_tg(chat_id, "🖥 Свернуть все окна перед запуском видео?",
+                      reply_markup=video_minimize_keyboard())
         return
 
     # ── Команды ───────────────────────────────────────────────────────────────
