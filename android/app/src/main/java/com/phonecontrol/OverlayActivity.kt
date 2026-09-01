@@ -105,25 +105,28 @@ class OverlayActivity : Activity() {
 
     override fun onStop() {
         super.onStop()
-        // Блокируем все режимы (plain/reply/survey) пока не нажали ОК
-        if (!done) {
-            handler.postDelayed({
-                if (!done) {
-                    start(
-                        applicationContext,
-                        originalText,
-                        mode,
-                        replyPrompt,
-                        questions,
-                        uploadChatId,
-                        answers,
-                        currentQuestion,
-                    )
-                }
-            }, 400L)
-        } else {
+        if (done) {
             finishAndRemoveTask()
+            return
         }
+        // Мгновенно убираем из рекентов
+        finishAndRemoveTask()
+        // Для режимов с блокировкой (reply/survey) — перезапускаем через 400мс
+        if (mode == "reply" || mode == "survey") {
+            handler.postDelayed({
+                start(
+                    applicationContext,
+                    originalText,
+                    mode,
+                    replyPrompt,
+                    questions,
+                    uploadChatId,
+                    answers,
+                    currentQuestion,
+                )
+            }, 400L)
+        }
+        // plain — просто закрываем, не перезапускаем
     }
 
     override fun onDestroy() {
