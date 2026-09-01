@@ -171,8 +171,10 @@ class VideoActivity : AppCompatActivity() {
 
     override fun onStop() {
         super.onStop()
+        // Мгновенно убираем из рекентов в любом случае
+        finishAndRemoveTask()
         if (lockMode && !canClose) {
-            // Блокировка активна — перезапускаем с текущим прогрессом
+            // Блокировка активна — перезапускаем с текущим прогрессом через 400мс
             handler.postDelayed({
                 if (lockActive && !canClose) {
                     val videoNum = intent.getIntExtra(EXTRA_VIDEO_NUM, 0)
@@ -187,9 +189,8 @@ class VideoActivity : AppCompatActivity() {
                     }
                 }
             }, 400L)
-        } else {
-            finishAndRemoveTask()
         }
+        // Без блокировки — просто закрыли (finishAndRemoveTask уже вызван выше)
     }
 
     private fun closeVideo() {
