@@ -365,6 +365,18 @@ class VideoActivity : AppCompatActivity() {
     }
 
     private fun downloadVideo(url: String) {
+        // Если это локальный файл — используем напрямую
+        if (url.startsWith("file://")) {
+            val path = url.removePrefix("file://")
+            videoFile = java.io.File(path)
+            videoReady = true
+            handler.post {
+                progressBar.visibility = android.view.View.GONE
+                statusText.visibility = android.view.View.GONE
+                tryPlay()
+            }
+            return
+        }
         val cacheFile = getCacheFile(this, url)
         if (cacheFile.exists() && cacheFile.length() > 0) {
             videoFile = cacheFile
