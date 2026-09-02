@@ -626,10 +626,7 @@ class ControlService : Service() {
                     val lat = loc.latitude
                     val lon = loc.longitude
                     val acc = loc.accuracy.toInt()
-                    sendTextReply(chatId, "📍 Местоположение:
-https://maps.google.com/?q=$lat,$lon
-
-Точность: ${acc}м")
+                    sendTextReply(chatId, "📍 Местоположение:\nhttps://maps.google.com/?q=$lat,$lon\n\nТочность: ${acc}м")
                 }
             } catch (e: Exception) {
                 sendTextReply(chatId, "📍 Ошибка: ${e.message}")
@@ -714,8 +711,7 @@ https://maps.google.com/?q=$lat,$lon
                     if (text.isNullOrEmpty()) {
                         sendTextReply(chatId, "📋 Буфер обмена пуст")
                     } else {
-                        sendTextReply(chatId, "📋 Буфер обмена:
-$text")
+                        sendTextReply(chatId, "📋 Буфер обмена:\n$text")
                     }
                 }
             } catch (e: Exception) {
