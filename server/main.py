@@ -1023,13 +1023,19 @@ async def video_list_endpoint(
         await send_tg(chat_id, "📭 На ПК нет скачанных видео. Добавь через /addraw <url>")
         return {"ok": True}
 
-    lines = ["📋 *Видео на ПК:*\n"]
+    lines = ["📋 Видео на телефоне:\n"]
     for v in videos:
-        fname = v['filename'].replace('.', '\\.')
-        lines.append(f"`{v['name']}` — {fname}")
-    lines.append("\n▶️ /raw <номер> — воспроизвести")
-    lines.append("🗑 /delvideo <номер> — удалить")
-    await send_tg(chat_id, "\n".join(lines))
+        lines.append(f"{v['name']} - {v['filename']} ({v['size_mb']} MB)")
+    lines.append("\n/raw <номер> - воспроизвести")
+    lines.append("/delvideo <номер> - удалить")
+    # Отправляем без Markdown чтобы символы в именах файлов не ломали парсер
+    payload = {"chat_id": chat_id, "text": "\n".join(lines)}
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json=payload)
+            print(f"send_tg video_list -> {r.status_code}")
+    except Exception as e:
+        print(f"video_list send error: {e}")
     return {"ok": True}
 
 
