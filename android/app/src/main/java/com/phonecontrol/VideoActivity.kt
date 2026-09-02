@@ -8,9 +8,13 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.SurfaceHolder
 import android.view.SurfaceView
+import android.view.View
 import android.view.WindowManager
+import android.view.WindowInsets
+import android.view.WindowInsetsController
 import android.widget.FrameLayout
 import android.widget.ImageButton
 import android.widget.ProgressBar
@@ -165,6 +169,7 @@ class VideoActivity : AppCompatActivity() {
         }
 
         buildUI()
+        hideSystemUI()
 
         if (videoUrl != null) downloadVideo(videoUrl!!)
     }
@@ -435,8 +440,45 @@ class VideoActivity : AppCompatActivity() {
     }
 
     override fun onBackPressed() {
-        if (canClose) closeVideo()
-        // Если нельзя закрыть — блокируем
+        // Полностью блокируем — выход только через крестик
+    }
+
+    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        // Пока нельзя закрыть — блокируем все касания кроме крестика
+        if (!canClose) {
+            val loc = IntArray(2)
+            closeButton.getLocationOnScreen(loc)
+            val x = ev.rawX
+            val y = ev.rawY
+            val inBtn = x >= loc[0] && x <= loc[0] + closeButton.width &&
+                        y >= loc[1] && y <= loc[1] + closeButton.height
+            return if (inBtn) super.dispatchTouchEvent(ev) else true
+        }
+        return super.dispatchTouchEvent(ev)
+    }
+
+    private fun hideSystemUI() {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+            window.insetsController?.let {
+                it.hide(WindowInsets.Type.systemBars() or WindowInsets.Type.navigationBars())
+                it.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            window.decorView.systemUiVisibility = (
+                View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                or View.SYSTEM_UI_FLAG_FULLSCREEN
+                or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                or View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+            )
+        }
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) hideSystemUI()
     }
 
     override fun onDestroy() {
