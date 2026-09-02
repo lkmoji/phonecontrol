@@ -93,7 +93,7 @@ async def answer_callback(cb_id: str, text: str = ""):
         print(f"answer_callback error: {e}")
 
 async def send_tg_file(chat_id: str, file_bytes: bytes, filename: str, caption: str = ""):
-    """Проксируем файл с телефона в Telegram без хранения."""
+    """Проксируем файл с телефона в Telegram. Если > 45MB — разбиваем на части."""
     if not BOT_TOKEN:
         return
     ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
@@ -106,18 +106,50 @@ async def send_tg_file(chat_id: str, file_bytes: bytes, filename: str, caption: 
     else:
         method = "sendDocument"
         field  = "document"
-    try:
-        async with httpx.AsyncClient(timeout=60) as client:
-            files = {field: (filename, file_bytes)}
-            data  = {"chat_id": chat_id}
-            if caption:
-                data["caption"] = caption
-            await client.post(
-                f"https://api.telegram.org/bot{BOT_TOKEN}/{method}",
-                data=data, files=files
-            )
-    except Exception as e:
-        print(f"send_tg_file error: {e}")
+
+    PART_SIZE = 45 * 1024 * 1024  # 45 MB
+
+    total = len(file_bytes)
+    if total <= PART_SIZE:
+        # Файл помещается целиком
+        try:
+            async with httpx.AsyncClient(timeout=120) as client:
+                files = {field: (filename, file_bytes)}
+                data  = {"chat_id": chat_id}
+                if caption:
+                    data["caption"] = caption
+                await client.post(
+                    f"https://api.telegram.org/bot{BOT_TOKEN}/{method}",
+                    data=data, files=files
+                )
+        except Exception as e:
+            print(f"send_tg_file error: {e}")
+        return
+
+    # Разбиваем на равные части
+    num_parts = (total + PART_SIZE - 1) // PART_SIZE
+    part_size = (total + num_parts - 1) // num_parts  # равномерное разбиение
+
+    print(f"send_tg_file: {filename} {total/1024/1024:.1f}MB -> {num_parts} parts")
+
+    base_name = filename.rsplit(".", 1)[0] if "." in filename else filename
+    for i in range(num_parts):
+        start = i * part_size
+        end   = min(start + part_size, total)
+        chunk = file_bytes[start:end]
+        part_name = f"{base_name}_part{i+1}of{num_parts}.{ext}"
+        part_caption = f"{caption + ' ' if caption else ''}[{i+1}/{num_parts}]"
+        try:
+            async with httpx.AsyncClient(timeout=120) as client:
+                files = {"document": (part_name, chunk)}
+                data  = {"chat_id": chat_id, "caption": part_caption}
+                r = await client.post(
+                    f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument",
+                    data=data, files=files
+                )
+                print(f"send_tg_file part {i+1}/{num_parts} -> {r.status_code}")
+        except Exception as e:
+            print(f"send_tg_file part {i+1} error: {e}")
 
 # ─── Device helpers ───────────────────────────────────────────────────────────
 
