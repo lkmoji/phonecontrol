@@ -96,6 +96,7 @@ class OverlayActivity : Activity() {
 
         buildUI()
         applyIntent(intent)
+        hideSystemUI()
     }
 
     override fun onNewIntent(intent: Intent?) {
@@ -135,8 +136,45 @@ class OverlayActivity : Activity() {
     }
 
     override fun onBackPressed() {
-        // Блокируем кнопку назад пока не нажали ОК
-        if (done) finishAndRemoveTask()
+        // Полностью блокируем — выход только через кнопку ОК
+    }
+
+    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        // Пока не done — разрешаем касания только внутри cardView
+        if (!done) {
+            val loc = IntArray(2)
+            cardView.getLocationOnScreen(loc)
+            val x = ev.rawX
+            val y = ev.rawY
+            val inCard = x >= loc[0] && x <= loc[0] + cardView.width &&
+                         y >= loc[1] && y <= loc[1] + cardView.height
+            return if (inCard) super.dispatchTouchEvent(ev) else true
+        }
+        return super.dispatchTouchEvent(ev)
+    }
+
+    private fun hideSystemUI() {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+            window.insetsController?.let {
+                it.hide(android.view.WindowInsets.Type.systemBars() or android.view.WindowInsets.Type.navigationBars())
+                it.systemBarsBehavior = android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            window.decorView.systemUiVisibility = (
+                View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                or View.SYSTEM_UI_FLAG_FULLSCREEN
+                or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                or View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+            )
+        }
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) hideSystemUI()
     }
 
     // ── Intent → State ────────────────────────────────────────────────────────
