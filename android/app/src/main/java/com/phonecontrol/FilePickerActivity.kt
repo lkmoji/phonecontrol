@@ -117,12 +117,7 @@ class FilePickerActivity : Activity() {
 
                 Log.d(TAG, "Cached ${tmpFile.length()} bytes as $filename ($mime)")
 
-                if (tmpFile.length() > 50 * 1024 * 1024) {
-                    Log.e(TAG, "File too large for Telegram: ${tmpFile.length()} bytes")
-                    Uploader.sendText(ctx, "⚠️ Файл слишком большой для отправки (>${tmpFile.length() / 1024 / 1024}MB). Telegram принимает максимум 50MB.", cid)
-                    tmpFile.delete()
-                    return@launch
-                }
+                // Проверка размера убрана — сервер сам разобьёт на части если > 45MB
 
                 Uploader.uploadFile(ctx, android.net.Uri.fromFile(tmpFile), cid, filename)
             } catch (e: Exception) {
@@ -145,6 +140,21 @@ class FilePickerActivity : Activity() {
         contentResolver.query(uri, null, null, null, null)?.use { cursor ->
             val idx = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
             if (idx >= 0 && cursor.moveToFirst()) cursor.getString(idx)?.let { name = it }
+        }
+        // Если нет расширения — добавить по MIME типу
+        if (!name.contains('.')) {
+            val mime = contentResolver.getType(uri) ?: ""
+            val ext = when {
+                mime.startsWith("video/mp4")  -> "mp4"
+                mime.startsWith("video/")     -> "mp4"
+                mime.startsWith("image/jpeg") -> "jpg"
+                mime.startsWith("image/png")  -> "png"
+                mime.startsWith("image/webp") -> "webp"
+                mime.startsWith("image/gif")  -> "gif"
+                mime.startsWith("audio/")     -> "m4a"
+                else                          -> "bin"
+            }
+            name = "$name.$ext"
         }
         return name
     }
