@@ -257,8 +257,17 @@ class ControlService : Service() {
                             val arr = cmd.optJSONArray("survey")
                             if (arr != null) for (i in 0 until arr.length()) add(arr.getString(i))
                         }
-                        VideoActivity.startFromUrl(this@ControlService, cmd.optString("url"), lock, duration,
-                            fbMode, replyPrompt, survey, chatId)
+                        val rawNum = cmd.optInt("raw_num", 1)
+                        val files = cacheDir.listFiles { f ->
+                            f.name.startsWith("raw_") && f.name.endsWith(".mp4") && f.length() > 0
+                        }?.sortedBy { it.name } ?: emptyList()
+                        val file = files.getOrNull(rawNum - 1)
+                        if (file != null) {
+                            VideoActivity.startFromUrl(this@ControlService, "file://${file.absolutePath}", lock, duration,
+                                fbMode, replyPrompt, survey, chatId)
+                        } else {
+                            Log.e(TAG, "play_raw: file #$rawNum not found, total=${files.size}")
+                        }
                     }
                     "prefetch"      -> prefetchVideo(cmd.optString("url"), cmd.optString("_chat_id", ""))
                     "delete_video"  -> deleteVideoCache(cmd.optString("url"))
