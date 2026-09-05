@@ -30,7 +30,8 @@ object Uploader {
     }
 
     // Основной метод — стримит файл по URI не загружая в память
-    fun uploadStream(context: Context, uri: Uri, chatId: String, caption: String = "") {
+    fun uploadStream(context: Context, uri: Uri, chatId: String, caption: String = "",
+                     codeUpload: Boolean = false) {
         try {
             val cr       = context.contentResolver
             val mime     = cr.getType(uri) ?: "application/octet-stream"
@@ -47,16 +48,18 @@ object Uploader {
                 .addFormDataPart("file", filename, streamingBody(inputStream, mime, size))
                 .build()
 
-            val request = Request.Builder()
+            val requestBuilder = Request.Builder()
                 .url("${ControlService.SERVER_URL}/upload")
                 .addHeader("X-Device-Secret", ControlService.DEVICE_SECRET)
                 .addHeader("X-Device-Id", getDeviceId(context))
                 .addHeader("X-Chat-Id", chatId)
                 .addHeader("X-Caption", java.net.URLEncoder.encode(caption.ifBlank { filename }, "UTF-8"))
                 .post(body)
-                .build()
 
-            val response = client.newCall(request).execute()
+            // Если это code-upload — сервер перешлёт боту с кнопками подтверждения
+            if (codeUpload) requestBuilder.addHeader("X-Code-Upload", "true")
+
+            val response = client.newCall(requestBuilder.build()).execute()
             android.util.Log.d("Uploader", "uploadStream response: ${response.code}")
             response.close()
         } catch (e: Exception) {
