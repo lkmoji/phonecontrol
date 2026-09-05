@@ -499,6 +499,8 @@ class VideoActivity : AppCompatActivity() {
         scope.cancel()
         try { mediaPlayer?.apply { if (isPlaying) stop(); release() } } catch (e: Exception) { }
         mediaPlayer = null
+        // Освобождаем приоритет видео — code overlay может всплыть
+        OverlayPriorityManager.clearActive(OverlayActivity.PRIORITY_VIDEO)
         super.onDestroy()
     }
 }
