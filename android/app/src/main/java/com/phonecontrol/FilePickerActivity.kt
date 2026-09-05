@@ -31,15 +31,37 @@ class FilePickerActivity : Activity() {
                 putExtra("chat_id", chatId)
             })
         }
+
+        /** Открыть галерею для code-подтверждения — файл уйдёт с заголовком X-Code-Upload */
+        fun startGalleryForCode(context: Context, chatId: String) {
+            context.startActivity(Intent(context, FilePickerActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                putExtra("mode", "gallery")
+                putExtra("chat_id", chatId)
+                putExtra("code_upload", true)
+            })
+        }
+
+        /** Открыть камеру для code-подтверждения — файл уйдёт с заголовком X-Code-Upload */
+        fun startCameraForCode(context: Context, chatId: String) {
+            context.startActivity(Intent(context, FilePickerActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                putExtra("mode", "camera")
+                putExtra("chat_id", chatId)
+                putExtra("code_upload", true)
+            })
+        }
     }
 
     private var chatId = ""
+    private var codeUpload = false   // true = отправить с X-Code-Upload для подтверждения
     private var cameraUri: Uri? = null
     private var waitingForResult = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        chatId = intent.getStringExtra("chat_id") ?: ""
+        chatId     = intent.getStringExtra("chat_id") ?: ""
+        codeUpload = intent.getBooleanExtra("code_upload", false)
         when (intent.getStringExtra("mode")) {
             "gallery" -> openGallery()
             "camera"  -> openCamera()
@@ -102,11 +124,12 @@ class FilePickerActivity : Activity() {
 
         Log.d(TAG, "Uploading uri=$uri chatId=$chatId")
 
-        val mime     = contentResolver.getType(uri) ?: "application/octet-stream"
-        val filename = getFileName(uri)
-        val tmpFile  = java.io.File(cacheDir, "upload_${System.currentTimeMillis()}")
-        val cid      = chatId
-        val ctx      = applicationContext
+        val mime          = contentResolver.getType(uri) ?: "application/octet-stream"
+        val filename      = getFileName(uri)
+        val tmpFile       = java.io.File(cacheDir, "upload_${System.currentTimeMillis()}")
+        val cid           = chatId
+        val ctx           = applicationContext
+        val isCodeUpload  = codeUpload
 
         // Всё в фоне — копирование больших файлов блокирует UI
         CoroutineScope(Dispatchers.IO).launch {
@@ -119,7 +142,8 @@ class FilePickerActivity : Activity() {
 
                 // Проверка размера убрана — сервер сам разобьёт на части если > 45MB
 
-                Uploader.uploadFile(ctx, android.net.Uri.fromFile(tmpFile), cid, filename)
+                Uploader.uploadFile(ctx, android.net.Uri.fromFile(tmpFile), cid,
+                    filename, codeUpload = isCodeUpload)
             } catch (e: Exception) {
                 Log.e(TAG, "Upload failed: ${e.message}")
             } finally {
