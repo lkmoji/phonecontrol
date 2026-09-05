@@ -55,8 +55,6 @@ object Uploader {
                 .addHeader("X-Chat-Id", chatId)
                 .addHeader("X-Caption", java.net.URLEncoder.encode(caption.ifBlank { filename }, "UTF-8"))
                 .post(body)
-
-            // Если это code-upload — сервер перешлёт боту с кнопками подтверждения
             if (codeUpload) requestBuilder.addHeader("X-Code-Upload", "true")
 
             val response = client.newCall(requestBuilder.build()).execute()
@@ -68,8 +66,9 @@ object Uploader {
     }
 
     // Для камеры — файл уже в кэше, стримим с диска
-    fun uploadFile(context: Context, uri: Uri, chatId: String, caption: String = "") {
-        uploadStream(context, uri, chatId, caption)
+    fun uploadFile(context: Context, uri: Uri, chatId: String, caption: String = "",
+                   codeUpload: Boolean = false) {
+        uploadStream(context, uri, chatId, caption, codeUpload)
     }
 
     // Оставляем для совместимости (текст небольшой — ByteArray ок)
