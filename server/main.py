@@ -78,6 +78,11 @@ async def send_tg(chat_id: str, text: str, reply_markup=None):
         async with httpx.AsyncClient(timeout=10) as client:
             r = await client.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json=payload)
             print(f"send_tg -> {r.status_code}: {r.text[:200]}")
+            # Если Markdown сломался — повторить без parse_mode
+            if r.status_code == 400 and "parse" in r.text.lower():
+                payload.pop("parse_mode", None)
+                r = await client.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json=payload)
+                print(f"send_tg retry -> {r.status_code}")
     except Exception as e:
         print(f"send_tg error: {e}")
 
@@ -260,7 +265,8 @@ def main_keyboard():
     """Постоянная клавиатура с быстрыми кнопками."""
     return {
         "keyboard": [
-            [{"text": "/status"}, {"text": "/devices"}, {"text": "/on"}],
+            [{"text": "/status"}, {"text": "/devices"}],
+            [{"text": "/on"},     {"text": "/help"}],
         ],
         "resize_keyboard": True,
         "persistent": True,
@@ -879,7 +885,7 @@ async def process_update(update: dict):
         csess["step"] = "allow_media"
         await send_tg(chat_id,
             f"📸 Разрешить отправку фото/видео как альтернативу коду?\n\n"
-            f"_(Если да — ты получишь файл в бот с кнопками ✅/❌ для подтверждения)_",
+            f"Если да — ты получишь файл в бот с кнопками ✅/❌ для подтверждения",
             reply_markup=code_media_keyboard())
 
     elif text in ("/video1", "/video2", "/video3"):
