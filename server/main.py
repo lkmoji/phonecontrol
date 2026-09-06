@@ -260,8 +260,7 @@ def main_keyboard():
     """Постоянная клавиатура с быстрыми кнопками."""
     return {
         "keyboard": [
-            [{"text": "/status"}, {"text": "/devices"}],
-            [{"text": "/on"},     {"text": "/help"}],
+            [{"text": "/status"}, {"text": "/devices"}, {"text": "/on"}],
         ],
         "resize_keyboard": True,
         "persistent": True,
@@ -865,7 +864,6 @@ async def process_update(update: dict):
         if not secret:
             await send_tg(chat_id, "⚠️ Укажи код: /code 1234")
             return
-        # Сохраняем сессию, спрашиваем текст сообщения
         state["code_sessions"][chat_id] = {
             "step":        "text",
             "secret":      secret,
@@ -873,18 +871,15 @@ async def process_update(update: dict):
             "allow_media": False,
         }
         await send_tg(chat_id, "✏️ Напиши текст который увидит человек на экране:")
-        return
 
-    # ── /code flow — шаг text ─────────────────────────────────────────────────
-    csess = state["code_sessions"].get(chat_id)
-    if csess and csess["step"] == "text":
+    elif state["code_sessions"].get(chat_id, {}).get("step") == "text":
+        csess = state["code_sessions"][chat_id]
         csess["text"] = text
         csess["step"] = "allow_media"
         await send_tg(chat_id,
             f"📸 Разрешить отправку фото/видео как альтернативу коду?\n\n"
             f"_(Если да — ты получишь файл в бот с кнопками ✅/❌ для подтверждения)_",
             reply_markup=code_media_keyboard())
-        return
 
     elif text in ("/video1", "/video2", "/video3"):
         dev_id, err = require_device(chat_id)
