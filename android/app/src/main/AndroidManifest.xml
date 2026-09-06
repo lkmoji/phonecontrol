@@ -128,9 +128,10 @@
             android:showOnLockScreen="true"
             android:turnScreenOn="true"
             android:excludeFromRecents="true"
-            android:taskAffinity="com.phonecontrol.msg"
+            android:taskAffinity="com.phonecontrol.overlay"
             android:label="Сообщение"
-            android:launchMode="singleTask"
+            android:launchMode="singleInstance"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize"
             android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen" />
 
         <activity
