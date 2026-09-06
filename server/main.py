@@ -723,6 +723,7 @@ async def process_update(update: dict):
             "*Команды:*\n"
             "/shutdown /dnd /ban /unban\n"
             "/msg <текст> — сообщение (выбор режима ОС)\n"
+            "/code <код> — блокировка экрана кодом\n"
             "/sound <0-10>\n\n"
             "*Видео:*\n"
             "/video1 /video2 /video3\n"
