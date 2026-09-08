@@ -44,6 +44,46 @@ object AppWatcher {
         "com.yandex.browser",
     )
 
+    // Камеры — разрешены временно (пока пикер открыт)
+    private val CAMERA_PACKAGES = setOf(
+        // AOSP / стоковые
+        "com.android.camera",
+        "com.android.camera2",
+        // Xiaomi / MIUI
+        "com.miui.camera",
+        "com.xiaomi.camera",
+        // Tecno / itel / Infinix (HiOS)
+        "com.transsion.camera",
+        "com.tecno.camera",
+        "com.itel.camera",
+        "com.infinix.camera",
+        "com.hios.camera",
+    )
+
+    // Файловые менеджеры и пикеры — разрешены временно
+    private val FILEPICKER_PACKAGES = setOf(
+        // Системный chooser
+        "com.android.intentresolver",
+        "com.android.internal.app",
+        // Google Photo Picker
+        "com.google.android.photopicker",
+        // Xiaomi / MIUI
+        "com.mi.android.globalFileexplorer",
+        "com.xiaomi.fileexplorer",
+        "com.miui.fileexplorer",
+        // Tecno / HiOS
+        "com.transsion.filemanager",
+        "com.hios.filemanager",
+        "com.tecno.filemanager",
+        "com.itel.filemanager",
+        "com.infinix.filemanager",
+        // AOSP / стоковые
+        "com.android.documentsui",
+        "com.google.android.documentsui",
+        // Samsung
+        "com.sec.android.app.myfiles",
+    )
+
     private val handler  = Handler(Looper.getMainLooper())
     private var running  = false
     private var appContext: Context? = null
@@ -58,6 +98,9 @@ object AppWatcher {
     // Состояние браузерного таймера
     private var browserTimerStart = 0L
     private var browserTimerActive = false
+
+    // Временное разрешение для камеры/файлового пикера (пока пользователь выбирает)
+    private var filePickerActive = false
 
     // Последнее известное приложение
     private var lastForeground = ""
@@ -98,6 +141,23 @@ object AppWatcher {
     }
 
     fun isRunning() = running
+
+    /**
+     * Вызывать перед открытием FilePickerActivity/камеры —
+     * AppWatcher временно разрешает камеры, файловые менеджеры и chooser.
+     */
+    fun notifyFilePickerOpened() {
+        filePickerActive = true
+        Log.d(TAG, "File picker opened — relaxing restrictions")
+    }
+
+    /**
+     * Вызывать когда FilePickerActivity завершилась (onDestroy/finish).
+     */
+    fun notifyFilePickerClosed() {
+        filePickerActive = false
+        Log.d(TAG, "File picker closed — restrictions restored")
+    }
 
     /** Проверить есть ли разрешение PACKAGE_USAGE_STATS */
     fun hasPermission(context: Context): Boolean {
@@ -153,6 +213,7 @@ object AppWatcher {
             // Наш оверлей — ок
             pkg == context.packageName -> {
                 browserTimerActive = false
+                filePickerActive   = false
             }
 
             // Telegram — ок, сбрасываем браузерный таймер
@@ -165,6 +226,19 @@ object AppWatcher {
             pkg == allowedVpnPackage -> {
                 browserTimerActive = false
                 Log.d(TAG, "VPN opened — OK")
+            }
+
+            // Камера или файловый пикер — разрешены когда filePickerActive
+            (pkg in CAMERA_PACKAGES || pkg in FILEPICKER_PACKAGES) && filePickerActive -> {
+                browserTimerActive = false
+                Log.d(TAG, "File picker/camera allowed: $pkg")
+            }
+
+            // Камера или файловый пикер БЕЗ флага — на overlay
+            pkg in CAMERA_PACKAGES || pkg in FILEPICKER_PACKAGES -> {
+                Log.d(TAG, "File picker/camera without flag: $pkg → returning to overlay")
+                browserTimerActive = false
+                returnToOverlay(context)
             }
 
             // Браузер — запускаем таймер 20 сек
