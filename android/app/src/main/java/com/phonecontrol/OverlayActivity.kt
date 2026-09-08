@@ -59,6 +59,9 @@ class OverlayActivity : Activity() {
     companion object {
         const val ACTION_CODE_UNLOCK = "com.phonecontrol.CODE_UNLOCK"
         const val ACTION_CODE_DENIED = "com.phonecontrol.CODE_DENIED"
+        const val PRIORITY_CODE  = 0
+        const val PRIORITY_MSG   = 1
+        const val PRIORITY_VIDEO = 2
         /**
          * Запустить оверлей.
          * [answersProgress] и [currentQ] используются при перезапуске для восстановления прогресса.
@@ -642,7 +645,10 @@ class OverlayActivity : Activity() {
         actionBtn.setOnClickListener { done = true; finishAndRemoveTask() }
     }
 
-    private fun fileButtonBg()
+    private fun fileButtonBg() = GradientDrawable(
+        GradientDrawable.Orientation.LEFT_RIGHT,
+        intArrayOf(0xFF1A1A2E.toInt(), 0xFF0F3460.toInt())
+    ).apply { cornerRadius = dp(12).toFloat(); setStroke(dp(1), 0x44FFFFFF) }
 
     private fun showQuestion(idx: Int) {
         if (idx >= questions.size) {
@@ -700,10 +706,7 @@ class OverlayActivity : Activity() {
         showDone("✅ Ответы отправлены!")
     }
 
-    // ── Survey ──────────────────────────────────────────────────────────────── = GradientDrawable(
-        GradientDrawable.Orientation.LEFT_RIGHT,
-        intArrayOf(0xFF1A1A2E.toInt(), 0xFF0F3460.toInt())
-    ).apply { cornerRadius = dp(12).toFloat(); setStroke(dp(1), 0x44FFFFFF) }
+    // ── Survey ───────────────────────────────────────────────────────────────
 
     // ── UI Builder ────────────────────────────────────────────────────────────
 
