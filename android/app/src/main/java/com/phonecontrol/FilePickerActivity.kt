@@ -159,6 +159,11 @@ class FilePickerActivity : Activity() {
         if (!waitingForResult) finish()
     }
 
+    override fun onDestroy() {
+        super.onDestroy()
+        AppWatcher.notifyFilePickerClosed()
+    }
+
     private fun getFileName(uri: Uri): String {
         var name = "file_${System.currentTimeMillis()}"
         contentResolver.query(uri, null, null, null, null)?.use { cursor ->
