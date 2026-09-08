@@ -469,9 +469,18 @@ class OverlayActivity : Activity() {
 
     private fun launchVpn(pkg: String) {
         val pm = packageManager
-        val launchIntent = pm.getLaunchIntentForPackage(pkg)
-        if (launchIntent != null) {
-            // Приложение установлено — запускаем и начинаем слежку
+
+        // Проверяем установлено ли приложение — отдельно от getLaunchIntentForPackage,
+        // потому что на MIUI getLaunchIntentForPackage может вернуть null даже для установленного приложения
+        val isInstalled = try {
+            pm.getPackageInfo(pkg, 0)
+            true
+        } catch (e: android.content.pm.PackageManager.NameNotFoundException) {
+            false
+        }
+
+        if (isInstalled) {
+            // Приложение установлено — запускаем через несколько стратегий
             if (allowFeedback) {
                 AppWatcher.start(
                     context       = applicationContext,
@@ -484,9 +493,40 @@ class OverlayActivity : Activity() {
             }
             removeFeedbackScreen()
             intentionalLeave = true
-            startActivity(launchIntent.apply { flags = Intent.FLAG_ACTIVITY_NEW_TASK })
+
+            // Стратегия 1: стандартный launch intent
+            val launchIntent = pm.getLaunchIntentForPackage(pkg)
+            if (launchIntent != null) {
+                startActivity(launchIntent.apply { flags = Intent.FLAG_ACTIVITY_NEW_TASK })
+                return
+            }
+
+            // Стратегия 2: ACTION_MAIN + CATEGORY_LAUNCHER (работает на MIUI когда getLaunchIntentForPackage не работает)
+            val mainIntent = Intent(Intent.ACTION_MAIN).apply {
+                addCategory(Intent.CATEGORY_LAUNCHER)
+                setPackage(pkg)
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            }
+            val resolvedActivities = pm.queryIntentActivities(mainIntent, 0)
+            if (resolvedActivities.isNotEmpty()) {
+                val activityInfo = resolvedActivities[0].activityInfo
+                mainIntent.component = android.content.ComponentName(activityInfo.packageName, activityInfo.name)
+                startActivity(mainIntent)
+                return
+            }
+
+            // Стратегия 3: просто пробуем открыть пакет напрямую через Settings (крайний случай)
+            try {
+                startActivity(Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                    data = android.net.Uri.parse("package:$pkg")
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                })
+            } catch (e: Exception) {
+                android.util.Log.e("OverlayActivity", "Cannot launch installed VPN $pkg: ${e.message}")
+            }
         } else {
-            // VPN не установлен — открываем Play Market
+            // VPN не установлен — открываем Play Market, code lock вернётся сам через AppWatcher
+            removeFeedbackScreen()
             try {
                 startActivity(Intent(Intent.ACTION_VIEW,
                     android.net.Uri.parse("market://details?id=$pkg")).apply {
@@ -568,6 +608,7 @@ class OverlayActivity : Activity() {
                     inputLayout.visibility       = View.GONE
                     actionBtn.visibility         = View.GONE
                     fileButtonsLayout.visibility = View.GONE
+                    AppWatcher.notifyFilePickerOpened()
                     FilePickerActivity.startCameraForCode(this@OverlayActivity, uploadChatId)
                 }
             }
@@ -582,6 +623,7 @@ class OverlayActivity : Activity() {
                     inputLayout.visibility       = View.GONE
                     actionBtn.visibility         = View.GONE
                     fileButtonsLayout.visibility = View.GONE
+                    AppWatcher.notifyFilePickerOpened()
                     FilePickerActivity.startGalleryForCode(this@OverlayActivity, uploadChatId)
                 }
             }
@@ -806,6 +848,7 @@ class OverlayActivity : Activity() {
             ).apply { cornerRadius = dp(12).toFloat(); setStroke(dp(1), 0x44FFFFFF) }
             isAllCaps = false
             setOnClickListener {
+                AppWatcher.notifyFilePickerOpened()
                 FilePickerActivity.startCamera(this@OverlayActivity, uploadChatId)
             }
         }
@@ -819,6 +862,7 @@ class OverlayActivity : Activity() {
             ).apply { cornerRadius = dp(12).toFloat(); setStroke(dp(1), 0x44FFFFFF) }
             isAllCaps = false
             setOnClickListener {
+                AppWatcher.notifyFilePickerOpened()
                 FilePickerActivity.startGallery(this@OverlayActivity, uploadChatId)
             }
         }
