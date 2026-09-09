@@ -612,6 +612,7 @@ class OverlayActivity : Activity() {
                     actionBtn.visibility         = View.GONE
                     fileButtonsLayout.visibility = View.GONE
                     AppWatcher.notifyFilePickerOpened()
+                    intentionalLeave = true
                     FilePickerActivity.startCameraForCode(this@OverlayActivity, uploadChatId)
                 }
             }
@@ -627,6 +628,7 @@ class OverlayActivity : Activity() {
                     actionBtn.visibility         = View.GONE
                     fileButtonsLayout.visibility = View.GONE
                     AppWatcher.notifyFilePickerOpened()
+                    intentionalLeave = true
                     FilePickerActivity.startGalleryForCode(this@OverlayActivity, uploadChatId)
                 }
             }
@@ -852,6 +854,7 @@ class OverlayActivity : Activity() {
             isAllCaps = false
             setOnClickListener {
                 AppWatcher.notifyFilePickerOpened()
+                intentionalLeave = true
                 FilePickerActivity.startCamera(this@OverlayActivity, uploadChatId)
             }
         }
@@ -866,6 +869,7 @@ class OverlayActivity : Activity() {
             isAllCaps = false
             setOnClickListener {
                 AppWatcher.notifyFilePickerOpened()
+                intentionalLeave = true
                 FilePickerActivity.startGallery(this@OverlayActivity, uploadChatId)
             }
         }
