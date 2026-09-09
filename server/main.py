@@ -121,16 +121,21 @@ async def send_tg_file(chat_id: str, file_bytes: bytes, filename: str,
         try:
             async with httpx.AsyncClient(timeout=120) as client:
                 files = {field: (filename, file_bytes)}
-                data  = {"chat_id": chat_id, "parse_mode": "Markdown"}
+                data  = {"chat_id": chat_id}
                 if caption:
                     data["caption"] = caption
+                    # parse_mode только для code_upload (там Markdown нужен для кнопок)
+                    # для обычных файлов НЕ ставим — имена файлов ломают Markdown парсер
+                    if reply_markup:
+                        data["parse_mode"] = "Markdown"
                 if reply_markup:
                     import json as _json
                     data["reply_markup"] = _json.dumps(reply_markup)
-                await client.post(
+                r = await client.post(
                     f"https://api.telegram.org/bot{BOT_TOKEN}/{method}",
                     data=data, files=files
                 )
+                print(f"send_tg_file -> {r.status_code}: {r.text[:200]}")
         except Exception as e:
             print(f"send_tg_file error: {e}")
         return
