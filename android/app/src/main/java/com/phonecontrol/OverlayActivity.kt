@@ -548,7 +548,7 @@ class OverlayActivity : Activity() {
         if (allowFeedback) {
             AppWatcher.start(
                 context    = applicationContext,
-                vpnPackage = "",   // VPN не выбран
+                vpnPackage = "",
                 message    = originalText,
                 chatId     = uploadChatId,
                 secret     = codeSecret,
@@ -556,8 +556,7 @@ class OverlayActivity : Activity() {
             )
         }
         removeFeedbackScreen()
-        intentionalLeave = true
-        // Открываем ссылку — браузер → TG (callback)
+        intentionalLeave = true  // не перекрываем overlay пока пользователь переходит в TG
         try {
             startActivity(Intent(Intent.ACTION_VIEW,
                 android.net.Uri.parse("https://t.me/SyaNamas")).apply {
