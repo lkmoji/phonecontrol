@@ -470,10 +470,6 @@ class OverlayActivity : Activity() {
     private fun launchVpn(pkg: String) {
         val pm = packageManager
 
-        // Проверяем установлено ли приложение — отдельно от getLaunchIntentForPackage,
-        // потому что на MIUI getLaunchIntentForPackage может вернуть null даже для установленного приложения
-        // MATCH_UNINSTALLED_PACKAGES нужен для MIUI — без него getPackageInfo может кинуть
-        // NameNotFoundException даже для реально установленного приложения
         val isInstalled = try {
             pm.getPackageInfo(pkg, android.content.pm.PackageManager.MATCH_UNINSTALLED_PACKAGES)
             true
@@ -481,7 +477,6 @@ class OverlayActivity : Activity() {
             false
         }
 
-        // AppWatcher запускаем В ЛЮБОМ СЛУЧАЕ — и если установлено, и если нет (Play Market тоже запрещён)
         if (allowFeedback) {
             AppWatcher.start(
                 context       = applicationContext,
@@ -497,39 +492,45 @@ class OverlayActivity : Activity() {
         if (isInstalled) {
             intentionalLeave = true
 
-            // Стратегия 1: стандартный launch intent
+            // Ищем launcher activity напрямую через queryIntentActivities
+            // и запускаем явно по ComponentName — без chooser, без FLAG_ACTIVITY_NEW_TASK конфликтов
+            val launcherIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER).apply {
+                setPackage(pkg)
+            }
+            val resolved = pm.queryIntentActivities(launcherIntent, android.content.pm.PackageManager.MATCH_ALL)
+            if (resolved.isNotEmpty()) {
+                val ai = resolved[0].activityInfo
+                val intent = Intent().apply {
+                    component = android.content.ComponentName(ai.packageName, ai.name)
+                    // Эти флаги открывают приложение без chooser на MIUI
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                            Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED or
+                            Intent.FLAG_ACTIVITY_CLEAR_TOP
+                }
+                try {
+                    startActivity(intent)
+                    return
+                } catch (e: Exception) {
+                    android.util.Log.e("OverlayActivity", "ComponentName launch failed: ${e.message}")
+                }
+            }
+
+            // Fallback: getLaunchIntentForPackage
             val launchIntent = pm.getLaunchIntentForPackage(pkg)
             if (launchIntent != null) {
-                startActivity(launchIntent.apply { flags = Intent.FLAG_ACTIVITY_NEW_TASK })
-                return
+                try {
+                    startActivity(launchIntent.apply {
+                        flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED
+                    })
+                    return
+                } catch (e: Exception) {
+                    android.util.Log.e("OverlayActivity", "getLaunchIntent failed: ${e.message}")
+                }
             }
 
-            // Стратегия 2: ACTION_MAIN + CATEGORY_LAUNCHER (работает на MIUI когда getLaunchIntentForPackage не работает)
-            val mainIntent = Intent(Intent.ACTION_MAIN).apply {
-                addCategory(Intent.CATEGORY_LAUNCHER)
-                setPackage(pkg)
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK
-            }
-            val resolvedActivities = pm.queryIntentActivities(mainIntent, 0)
-            if (resolvedActivities.isNotEmpty()) {
-                val activityInfo = resolvedActivities[0].activityInfo
-                mainIntent.component = android.content.ComponentName(activityInfo.packageName, activityInfo.name)
-                startActivity(mainIntent)
-                return
-            }
-
-            // Стратегия 3: крайний случай — настройки приложения
-            try {
-                startActivity(Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                    data = android.net.Uri.parse("package:$pkg")
-                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                })
-            } catch (e: Exception) {
-                android.util.Log.e("OverlayActivity", "Cannot launch installed VPN $pkg: ${e.message}")
-            }
+            android.util.Log.e("OverlayActivity", "Cannot launch $pkg — not found via any strategy")
         } else {
-            // VPN не установлен — открываем Play Market
-            // intentionalLeave НЕ ставим — AppWatcher увидит Play Market и вернёт в code lock
+            // VPN не установлен — Play Market, AppWatcher вернёт в code lock
             try {
                 startActivity(Intent(Intent.ACTION_VIEW,
                     android.net.Uri.parse("market://details?id=$pkg")).apply {
