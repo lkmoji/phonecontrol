@@ -1,5 +1,4 @@
-from fastapi import FastAPI, Header, HTTPException, UploadFile, File, Form
-from fastapi.responses import StreamingResponse
+from fastapi import FastAPI, Header, HTTPException, UploadFile, File
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from typing import Optional
@@ -45,6 +44,9 @@ BOT_TOKEN        = os.environ.get("BOT_TOKEN", "")
 ALLOWED_CHAT_ID  = os.environ.get("ALLOWED_CHAT_ID", "")
 DEVICE_SECRET    = os.environ.get("DEVICE_SECRET", "mysecret42")
 SELF_URL         = os.environ.get("SELF_URL", "")
+
+# Временное хранилище файлов для /tmp_video/{token}
+_temp_uploads: dict = {}
 
 VALID_NAMES = ["android", "security", "безопасность", "звонки", "system", "phonecontrol"]
 
