@@ -91,23 +91,13 @@ class FilePickerActivity : Activity() {
     }
 
     private fun openGallery() {
-        // ACTION_PICK явно открывает галерею, не камеру (в отличие от ACTION_GET_CONTENT на MIUI)
-        val pickIntent = Intent(Intent.ACTION_PICK).apply {
-            type = "image/*"
+        val intent = Intent(Intent.ACTION_GET_CONTENT).apply {
+            type = "*/*"
+            addCategory(Intent.CATEGORY_OPENABLE)
             putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("image/*", "video/*"))
         }
-        // Fallback на ACTION_GET_CONTENT если ACTION_PICK не резолвится
-        val intent = if (pickIntent.resolveActivity(packageManager) != null) {
-            pickIntent
-        } else {
-            Intent(Intent.ACTION_GET_CONTENT).apply {
-                type = "*/*"
-                addCategory(Intent.CATEGORY_OPENABLE)
-                putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("image/*", "video/*"))
-            }
-        }
         waitingForResult = true
-        startActivityForResult(intent, REQ_GALLERY)
+        startActivityForResult(Intent.createChooser(intent, "Выбери файл"), REQ_GALLERY)
     }
 
     private fun openCamera() {
