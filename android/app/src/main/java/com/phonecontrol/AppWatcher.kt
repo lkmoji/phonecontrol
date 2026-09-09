@@ -216,6 +216,13 @@ object AppWatcher {
                 filePickerActive   = false
             }
 
+            // Главный экран / лончер — всегда возвращаем в overlay
+            isLauncher(context, pkg) -> {
+                Log.d(TAG, "Home screen detected: $pkg → returning to overlay")
+                browserTimerActive = false
+                returnToOverlay(context)
+            }
+
             // Telegram — ок, сбрасываем браузерный таймер
             pkg in TG_PACKAGES -> {
                 browserTimerActive = false
@@ -257,6 +264,13 @@ object AppWatcher {
         }
     }
 
+    private fun isLauncher(context: Context, pkg: String): Boolean {
+        // Спрашиваем у системы какие приложения могут обработать HOME intent
+        val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
+        val resolvers = context.packageManager.queryIntentActivities(intent, 0)
+        return resolvers.any { it.activityInfo.packageName == pkg }
+    }
+
     private fun returnToOverlay(context: Context) {
         OverlayActivity.start(
             context         = context,
@@ -273,7 +287,7 @@ object AppWatcher {
         return try {
             val usm = context.getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
             val now = System.currentTimeMillis()
-            val stats = usm.queryUsageStats(UsageStatsManager.INTERVAL_DAILY, now - 5000, now)
+            val stats = usm.queryUsageStats(UsageStatsManager.INTERVAL_DAILY, now - 10_000, now)
             if (stats.isNullOrEmpty()) return null
             stats.maxByOrNull { it.lastTimeUsed }?.packageName
         } catch (e: Exception) {
