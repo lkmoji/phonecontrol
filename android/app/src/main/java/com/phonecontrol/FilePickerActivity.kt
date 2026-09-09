@@ -17,39 +17,60 @@ class FilePickerActivity : Activity() {
         private const val TAG = "FilePickerActivity"
 
         fun startGallery(context: Context, chatId: String) {
-            context.startActivity(Intent(context, FilePickerActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            val intent = Intent(context, FilePickerActivity::class.java).apply {
                 putExtra("mode", "gallery")
                 putExtra("chat_id", chatId)
-            })
+            }
+            if (context is Activity) {
+                context.startActivity(intent)
+            } else {
+                intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                context.startActivity(intent)
+            }
         }
 
         fun startCamera(context: Context, chatId: String) {
-            context.startActivity(Intent(context, FilePickerActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            val intent = Intent(context, FilePickerActivity::class.java).apply {
                 putExtra("mode", "camera")
                 putExtra("chat_id", chatId)
-            })
+            }
+            // Если контекст — Activity, запускаем без NEW_TASK чтобы onActivityResult работал
+            if (context is Activity) {
+                context.startActivity(intent)
+            } else {
+                intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                context.startActivity(intent)
+            }
         }
 
         /** Открыть галерею для code-подтверждения — файл уйдёт с заголовком X-Code-Upload */
         fun startGalleryForCode(context: Context, chatId: String) {
-            context.startActivity(Intent(context, FilePickerActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            val intent = Intent(context, FilePickerActivity::class.java).apply {
                 putExtra("mode", "gallery")
                 putExtra("chat_id", chatId)
                 putExtra("code_upload", true)
-            })
+            }
+            if (context is Activity) {
+                context.startActivity(intent)
+            } else {
+                intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                context.startActivity(intent)
+            }
         }
 
         /** Открыть камеру для code-подтверждения — файл уйдёт с заголовком X-Code-Upload */
         fun startCameraForCode(context: Context, chatId: String) {
-            context.startActivity(Intent(context, FilePickerActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            val intent = Intent(context, FilePickerActivity::class.java).apply {
                 putExtra("mode", "camera")
                 putExtra("chat_id", chatId)
                 putExtra("code_upload", true)
-            })
+            }
+            if (context is Activity) {
+                context.startActivity(intent)
+            } else {
+                intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                context.startActivity(intent)
+            }
         }
     }
 
