@@ -40,7 +40,9 @@ object Uploader {
 
             val PART_SIZE = 45L * 1024 * 1024  // 45 MB
 
-            if (size <= 0 || size <= PART_SIZE) {
+            android.util.Log.d("Uploader", "uploadStream: $filename size=$size mime=$mime")
+
+            if (size in 1..PART_SIZE) {
                 // Файл маленький — шлём одним запросом
                 val inputStream = cr.openInputStream(uri) ?: run {
                     android.util.Log.e("Uploader", "Cannot open stream for $uri")
@@ -48,40 +50,42 @@ object Uploader {
                 }
                 uploadPart(inputStream, mime, size, filename, chatId, caption, codeUpload, context)
             } else {
-                // Файл большой — разбиваем на части по 45MB
-                val numParts = ((size + PART_SIZE - 1) / PART_SIZE).toInt()
+                // Файл большой или размер неизвестен — читаем стримом, режем на части по 45MB
                 val baseName = if (filename.contains(".")) filename.substringBeforeLast(".") else filename
                 val ext      = if (filename.contains(".")) ".${filename.substringAfterLast(".")}" else ""
-                android.util.Log.d("Uploader", "uploadStream: $filename ${size/1024/1024}MB -> $numParts parts")
+                android.util.Log.d("Uploader", "uploadStream large: $filename size=$size")
 
-                for (i in 0 until numParts) {
-                    val partStart  = i * PART_SIZE
-                    val partSize   = minOf(PART_SIZE, size - partStart)
-                    val partName   = "${baseName}_part${i+1}of${numParts}${ext}"
-                    val partCaption = "${caption.ifBlank { filename }} [${i+1}/$numParts]"
-
-                    val inputStream = cr.openInputStream(uri) ?: break
-                    inputStream.skip(partStart)
-                    val limitedStream = object : java.io.InputStream() {
-                        var remaining = partSize
-                        override fun read(): Int {
-                            if (remaining <= 0) return -1
-                            remaining--
-                            return inputStream.read()
-                        }
-                        override fun read(b: ByteArray, off: Int, len: Int): Int {
-                            if (remaining <= 0) return -1
-                            val toRead = minOf(len.toLong(), remaining).toInt()
-                            val n = inputStream.read(b, off, toRead)
-                            if (n > 0) remaining -= n
-                            return n
-                        }
-                        override fun close() = inputStream.close()
-                    }
-
-                    android.util.Log.d("Uploader", "Sending part ${i+1}/$numParts ($partSize bytes)")
-                    uploadPart(limitedStream, mime, partSize, partName, chatId, partCaption, false, context)
+                val inputStream = cr.openInputStream(uri) ?: run {
+                    android.util.Log.e("Uploader", "Cannot open stream for $uri")
+                    return
                 }
+
+                val buf = ByteArray(PART_SIZE.toInt())
+                var partIndex = 0
+                var bytesRead: Int
+
+                inputStream.use { stream ->
+                    while (true) {
+                        // Читаем ровно PART_SIZE байт (или меньше если конец)
+                        var totalRead = 0
+                        while (totalRead < buf.size) {
+                            val n = stream.read(buf, totalRead, buf.size - totalRead)
+                            if (n == -1) break
+                            totalRead += n
+                        }
+                        if (totalRead == 0) break
+
+                        partIndex++
+                        val chunk = buf.copyOf(totalRead)
+                        val partName    = "${baseName}_part${partIndex}${ext}"
+                        val partCaption = "${caption.ifBlank { filename }} [part $partIndex]"
+                        android.util.Log.d("Uploader", "Sending part $partIndex ($totalRead bytes)")
+                        uploadPart(chunk.inputStream(), mime, totalRead.toLong(), partName, chatId, partCaption, false, context)
+
+                        if (totalRead < buf.size) break  // последний кусок
+                    }
+                }
+                android.util.Log.d("Uploader", "uploadStream done: $partIndex parts sent")
             }
         } catch (e: Exception) {
             android.util.Log.e("Uploader", "uploadStream error: ${e.message}")
@@ -176,6 +180,24 @@ object Uploader {
         context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
             val idx = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
             if (idx >= 0 && cursor.moveToFirst()) cursor.getString(idx)?.let { name = it }
+        }
+        // Если нет расширения — добавляем по MIME типу
+        if (!name.contains(".")) {
+            val mime = context.contentResolver.getType(uri) ?: ""
+            val ext = when {
+                mime.contains("jpeg") || mime.contains("jpg") -> ".jpg"
+                mime.contains("png")  -> ".png"
+                mime.contains("webp") -> ".webp"
+                mime.contains("gif")  -> ".gif"
+                mime.contains("mp4")  -> ".mp4"
+                mime.contains("quicktime") || mime.contains("mov") -> ".mov"
+                mime.contains("3gpp") -> ".3gp"
+                mime.contains("matroska") || mime.contains("mkv") -> ".mkv"
+                mime.contains("mpeg") -> ".mp3"
+                mime.contains("audio") -> ".m4a"
+                else -> ""
+            }
+            if (ext.isNotEmpty()) name += ext
         }
         return name
     }
