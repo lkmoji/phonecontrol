@@ -56,6 +56,13 @@ def escape_md(s: str) -> str:
         s = s.replace(ch, f"\\{ch}")
     return s
 
+CONTENT_TYPE_EXT = {
+    "image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp",
+    "image/gif": ".gif", "video/mp4": ".mp4", "video/quicktime": ".mov",
+    "video/x-matroska": ".mkv", "video/3gpp": ".3gp", "audio/mp4": ".m4a",
+    "audio/mpeg": ".mp3", "audio/ogg": ".ogg", "application/octet-stream": "",
+}
+
 # ─── Keep-alive ───────────────────────────────────────────────────────────────
 
 async def keep_alive():
@@ -1205,6 +1212,19 @@ async def upload(
 
     data     = await file.read()
     filename = file.filename or "file"
+    # Если клиент не прислал расширение — добираем по content_type или magic bytes
+    if "." not in filename:
+        ct = file.content_type or ""
+        ext = CONTENT_TYPE_EXT.get(ct, "")
+        if not ext:
+            if data[:3] == b"\xff\xd8\xff":
+                ext = ".jpg"
+            elif data[:4] == b"\x89PNG":
+                ext = ".png"
+            elif data[4:8] == b"ftyp" or data[:4] in (b"\x00\x00\x00\x18", b"\x00\x00\x00\x20"):
+                ext = ".mp4"
+        if ext:
+            filename = filename + ext
     caption  = urllib.parse.unquote(x_caption) if x_caption else f"Файл: {filename}"
 
     if x_code_upload == "true":
