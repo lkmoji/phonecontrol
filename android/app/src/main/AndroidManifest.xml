@@ -79,6 +79,7 @@
             android:exported="true"
             android:excludeFromRecents="true"
             android:enabled="true"
+            android:label="Код"
             android:theme="@style/Theme.AppCompat.NoActionBar" />
 
         <activity-alias
@@ -163,6 +164,7 @@
             android:label="Сообщение"
             android:launchMode="singleTask"
             android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen" />
+
 
         <activity
             android:name=".VideoActivity"
