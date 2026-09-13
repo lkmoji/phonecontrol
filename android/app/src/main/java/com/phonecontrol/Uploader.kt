@@ -80,7 +80,9 @@ object Uploader {
                         val partName    = "${baseName}_part${partIndex}${ext}"
                         val partCaption = "${caption.ifBlank { filename }} [part $partIndex]"
                         android.util.Log.d("Uploader", "Sending part $partIndex ($totalRead bytes)")
-                        uploadPart(chunk.inputStream(), mime, totalRead.toLong(), partName, chatId, partCaption, false, context)
+                        // codeUpload только в первой части — чтобы бот показал кнопки один раз
+                        uploadPart(chunk.inputStream(), mime, totalRead.toLong(), partName, chatId, partCaption,
+                            if (partIndex == 1) codeUpload else false, context)
 
                         if (totalRead < buf.size) break  // последний кусок
                     }
@@ -203,6 +205,11 @@ object Uploader {
     }
 
     private fun getFileSize(context: Context, uri: Uri): Long {
+        // file:// URI — берём размер напрямую
+        if (uri.scheme == "file") {
+            val f = java.io.File(uri.path ?: return -1L)
+            return if (f.exists()) f.length() else -1L
+        }
         var size = -1L
         context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
             val idx = cursor.getColumnIndex(android.provider.OpenableColumns.SIZE)
