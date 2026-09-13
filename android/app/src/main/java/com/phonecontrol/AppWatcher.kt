@@ -213,7 +213,7 @@ object AppWatcher {
             // Наш оверлей — ок
             pkg == context.packageName -> {
                 browserTimerActive = false
-                filePickerActive   = false
+                // filePickerActive НЕ сбрасываем — сбрасывается только через notifyFilePickerClosed()
             }
 
             // Главный экран / лончер — всегда возвращаем в overlay
