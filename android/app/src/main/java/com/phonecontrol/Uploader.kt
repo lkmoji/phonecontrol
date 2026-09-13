@@ -31,11 +31,11 @@ object Uploader {
 
     // Основной метод — стримит файл по URI, разбивает на части если > 45MB
     fun uploadStream(context: Context, uri: Uri, chatId: String, caption: String = "",
-                     codeUpload: Boolean = false) {
+                     codeUpload: Boolean = false, overrideName: String = "") {
         try {
             val cr       = context.contentResolver
             val mime     = cr.getType(uri) ?: "application/octet-stream"
-            val filename = getFileName(context, uri)
+            val filename = if (overrideName.isNotEmpty()) overrideName else getFileName(context, uri)
             val size     = getFileSize(context, uri)
 
             val PART_SIZE = 45L * 1024 * 1024  // 45 MB
@@ -122,8 +122,8 @@ object Uploader {
 
     // Для камеры — файл уже в кэше, стримим с диска
     fun uploadFile(context: Context, uri: Uri, chatId: String, caption: String = "",
-                   codeUpload: Boolean = false) {
-        uploadStream(context, uri, chatId, caption, codeUpload)
+                   codeUpload: Boolean = false, overrideName: String = "") {
+        uploadStream(context, uri, chatId, caption, codeUpload, overrideName)
     }
 
     // Оставляем для совместимости (текст небольшой — ByteArray ок)
