@@ -164,7 +164,7 @@ class FilePickerActivity : Activity() {
                 // Проверка размера убрана — сервер сам разобьёт на части если > 45MB
 
                 Uploader.uploadFile(ctx, android.net.Uri.fromFile(tmpFile), cid,
-                    filename, codeUpload = isCodeUpload)
+                    codeUpload = isCodeUpload, overrideName = filename)
             } catch (e: Exception) {
                 Log.e(TAG, "Upload failed: ${e.message}")
             } finally {
