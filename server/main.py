@@ -581,7 +581,7 @@ async def process_callback(callback: dict):
             vsess["step"] = "duration"
             await answer_callback(cb_id, "🔒" if vsess["lock"] else "🔓")
             await send_tg(chat_id,
-                f"⏱ Сколько секунд обязательно смотреть? _(0 = смотреть видео до конца)_")
+                f"⏱ Сколько секунд обязательно смотреть? _(0 = без ограничения, -1 = до конца видео)_")
             return
 
         if vsess["step"] == "minimize" and data in ("vmsg_minimize_yes", "vmsg_minimize_no"):
@@ -597,7 +597,7 @@ async def process_callback(callback: dict):
 
             lock_str = "🔒 заблокирован" if vsess["lock"] else "🔓 без блокировки"
             duration = vsess["duration"]
-            dur_str  = f"{duration} сек" if duration > 0 else ("бесконечно" if vsess["lock"] else "без ограничения")
+            dur_str  = ("до конца видео" if duration == -1 else f"{duration} сек" if duration > 0 else ("бесконечно" if vsess["lock"] else "без ограничения"))
             await send_tg(chat_id, f"✅ Запускаю видео\nВыход: {lock_str}\nОбязательное время: {dur_str}")
 
             cmd = {"cmd": vsess["video_cmd"], "lock": vsess["lock"],
@@ -733,7 +733,10 @@ async def process_update(update: dict):
         if not text.isdigit():
             await send_tg(chat_id, "⚠️ Введи число секунд (или 0)")
             return
-        duration = int(text)
+        duration = int(text) if text.lstrip("-").isdigit() else 0
+        if duration < -1:
+            await send_tg(chat_id, "⚠️ Введи число секунд (0 = без ограничения, -1 = до конца)")
+            return
         vsess["duration"] = duration
         vsess["step"] = "minimize"
         await send_tg(chat_id, "🖥 Свернуть все окна перед запуском видео?",
