@@ -79,14 +79,17 @@ object SettingsBlocker {
         Log.d(TAG, "SettingsBlocker stopped")
     }
 
+    private var tickCount = 0
+
     private fun checkForegroundApp() {
         val ctx = SettingsBlockerHolder.appContext ?: return
+        tickCount++
+        if (tickCount % 10 == 0) Log.d(TAG, "tick $tickCount, bannedApps=${bannedApps.size}")
         try {
             val usm = ctx.getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
             val now = System.currentTimeMillis()
 
-            // queryEvents точнее — возвращает реальные ACTIVITY_RESUMED события
-            val events = usm.queryEvents(now - 3000, now)
+            val events = usm.queryEvents(now - 5000, now)
             if (events == null) {
                 Log.d(TAG, "events null — no usage permission?")
                 return
@@ -101,7 +104,10 @@ object SettingsBlocker {
                 }
             }
 
-            if (lastPkg.isEmpty()) return
+            if (lastPkg.isEmpty()) {
+                if (tickCount % 10 == 0) Log.d(TAG, "lastPkg empty")
+                return
+            }
 
             Log.d(TAG, "Foreground: $lastPkg | banned: ${bannedApps.contains(lastPkg)}")
 
