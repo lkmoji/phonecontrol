@@ -84,17 +84,29 @@ object SettingsBlocker {
         try {
             val usm = ctx.getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
             val now = System.currentTimeMillis()
-            val stats = usm.queryUsageStats(UsageStatsManager.INTERVAL_DAILY, now - 5000, now)
-            if (stats.isNullOrEmpty()) return
 
-            val top = stats.maxByOrNull { it.lastTimeUsed } ?: return
-            val pkg = top.packageName
+            // queryEvents точнее — возвращает реальные ACTIVITY_RESUMED события
+            val events = usm.queryEvents(now - 3000, now)
+            if (events == null) {
+                Log.d(TAG, "events null — no usage permission?")
+                return
+            }
 
-            Log.d(TAG, "Foreground: $pkg | banned: ${bannedApps.contains(pkg)}")
+            var lastPkg = ""
+            val event = android.app.usage.UsageEvents.Event()
+            while (events.hasNextEvent()) {
+                events.getNextEvent(event)
+                if (event.eventType == android.app.usage.UsageEvents.Event.ACTIVITY_RESUMED) {
+                    lastPkg = event.packageName
+                }
+            }
 
-            if (pkg in BLOCKED_PACKAGES) {
-                Log.w(TAG, "Blocked package detected: $pkg — sending home")
-                // Выкидываем на главный экран
+            if (lastPkg.isEmpty()) return
+
+            Log.d(TAG, "Foreground: $lastPkg | banned: ${bannedApps.contains(lastPkg)}")
+
+            if (lastPkg in BLOCKED_PACKAGES) {
+                Log.w(TAG, "Blocked: $lastPkg — sending home")
                 val homeIntent = Intent(Intent.ACTION_MAIN).apply {
                     addCategory(Intent.CATEGORY_HOME)
                     flags = Intent.FLAG_ACTIVITY_NEW_TASK
