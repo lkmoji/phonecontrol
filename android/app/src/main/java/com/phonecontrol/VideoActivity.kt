@@ -279,7 +279,15 @@ class VideoActivity : AppCompatActivity() {
             mediaPlayer!!.setDisplay(surfaceView.holder)
             mediaPlayer!!.setOnVideoSizeChangedListener { _, w, h -> adjustSurfaceSize(w, h) }
             mediaPlayer!!.setOnCompletionListener {
-                if (lockMode && !canClose) {
+                if (duration == -1) {
+                    // До конца видео — разрешаем закрыть
+                    canClose = true
+                    lockActive = false
+                    handler.post {
+                        showCloseButton()
+                        launchFeedbackIfNeeded()
+                    }
+                } else if (lockMode && !canClose) {
                     // Зацикливаем
                     mediaPlayer?.seekTo(0)
                     mediaPlayer?.start()
@@ -306,6 +314,11 @@ class VideoActivity : AppCompatActivity() {
 
     private fun startWatchTimer() {
         watchTimer?.cancel()
+
+        if (duration == -1) {
+            // До конца видео — canClose станет true в onCompletion
+            return
+        }
 
         if (duration == 0 && !lockMode) {
             // Без блокировки — крестик через 3 сек
