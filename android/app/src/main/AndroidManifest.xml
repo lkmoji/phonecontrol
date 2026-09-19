@@ -160,8 +160,7 @@
             android:showOnLockScreen="true"
             android:turnScreenOn="true"
             android:excludeFromRecents="true"
-            android:taskAffinity="com.phonecontrol.msg"
-            android:label="Сообщение"
+            android:taskAffinity=""
             android:launchMode="singleTask"
             android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen" />
 
@@ -172,8 +171,7 @@
             android:showOnLockScreen="true"
             android:turnScreenOn="true"
             android:excludeFromRecents="true"
-            android:taskAffinity="com.phonecontrol.video"
-            android:label="Видео"
+            android:taskAffinity=""
             android:launchMode="singleTask"
             android:screenOrientation="fullSensor"
             android:theme="@style/Theme.AppCompat.NoActionBar" />
