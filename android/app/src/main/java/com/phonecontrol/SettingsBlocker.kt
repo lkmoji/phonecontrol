@@ -90,6 +90,8 @@ object SettingsBlocker {
             val top = stats.maxByOrNull { it.lastTimeUsed } ?: return
             val pkg = top.packageName
 
+            Log.d(TAG, "Foreground: $pkg | banned: ${bannedApps.contains(pkg)}")
+
             if (pkg in BLOCKED_PACKAGES) {
                 Log.w(TAG, "Blocked package detected: $pkg — sending home")
                 // Выкидываем на главный экран
