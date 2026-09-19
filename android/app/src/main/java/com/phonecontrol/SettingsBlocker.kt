@@ -13,8 +13,8 @@ object SettingsBlocker {
     private val handler = Handler(Looper.getMainLooper())
     private var isRunning = false
 
-    // Пакеты настроек которые блокируем
-    private val BLOCKED_PACKAGES = setOf(
+    // Пакеты настроек которые блокируем (статические)
+    private val SETTINGS_PACKAGES = setOf(
         "com.android.settings",
         "com.miui.settings",
         "com.miui.securitycenter",
@@ -25,15 +25,36 @@ object SettingsBlocker {
         "com.oneplus.settings",
         "com.oppo.settings",
         "com.samsung.android.settings",
-        "com.android.settings",
         "com.transsion.ossettingsext",
         "com.transsion.aisettings",
-        "com.transsion.settings",    // часто встречается в скриптах деблоата [citation:5]
+        "com.transsion.settings",
         "com.transsion.settings.intelligence",
         "com.transsion.settings.app",
         "com.transsion.settings.system",
         "com.transsion.settings.security",
     )
+
+    // Динамически заблокированные приложения через /banapp
+    private val bannedApps = mutableSetOf<String>()
+
+    private val BLOCKED_PACKAGES get() = SETTINGS_PACKAGES + bannedApps
+
+    fun banApps(packages: List<String>) {
+        bannedApps.addAll(packages)
+        Log.d(TAG, "Banned apps added: $packages, total banned: ${bannedApps.size}")
+    }
+
+    fun unbanApps(packages: List<String>) {
+        bannedApps.removeAll(packages.toSet())
+        Log.d(TAG, "Banned apps removed: $packages, remaining: ${bannedApps.size}")
+    }
+
+    fun unbanAllApps() {
+        bannedApps.clear()
+        Log.d(TAG, "All banned apps cleared")
+    }
+
+    fun getBannedApps(): Set<String> = bannedApps.toSet()
 
     private val checkRunnable = object : Runnable {
         override fun run() {
@@ -42,6 +63,8 @@ object SettingsBlocker {
             handler.postDelayed(this, 500L) // проверяем каждые 500мс
         }
     }
+
+    fun isRunning(): Boolean = isRunning
 
     fun start(context: Context) {
         if (isRunning) return
