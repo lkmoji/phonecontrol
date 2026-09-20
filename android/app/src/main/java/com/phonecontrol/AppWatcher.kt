@@ -91,6 +91,8 @@ object AppWatcher {
     // Параметры текущей сессии
     private var allowedVpnPackage = ""   // com.happproxy / su.happ.proxyutility / llc.itdev.incy
 
+    // Колбэк перезапуска видео (задаётся VideoActivity)
+    private var videoRelaunchCallback: (() -> Unit)? = null
 
     // Состояние браузерного таймера
     private var browserTimerStart = 0L
@@ -112,14 +114,42 @@ object AppWatcher {
         vpnPackage: String,
     ) {
         if (running) stop()
-        appContext        = context.applicationContext
-        allowedVpnPackage = vpnPackage
-        running           = true
+        appContext         = context.applicationContext
+        allowedVpnPackage  = vpnPackage
+        videoRelaunchCallback = null
+        running            = true
         browserTimerActive = false
         browserTimerStart  = 0L
         lastForeground     = ""
         Log.d(TAG, "AppWatcher started, vpn=$vpnPackage")
         scheduleCheck(context.applicationContext)
+    }
+
+    /**
+     * Запуск в режиме охраны VideoActivity.
+     * Если foreground уходит с нашего пакета — вызывается [relaunchCallback].
+     * Можно вызвать поверх уже работающего code-режима (колбэк просто добавляется).
+     */
+    fun startVideoGuard(context: Context, relaunchCallback: () -> Unit) {
+        videoRelaunchCallback = relaunchCallback
+        if (!running) {
+            appContext         = context.applicationContext
+            allowedVpnPackage  = ""
+            running            = true
+            browserTimerActive = false
+            browserTimerStart  = 0L
+            lastForeground     = ""
+            scheduleCheck(context.applicationContext)
+        }
+        Log.d(TAG, "AppWatcher: video guard activated")
+    }
+
+    /** Снять охрану видео (когда VideoActivity разрешено закрыться или уничтожено) */
+    fun stopVideoGuard() {
+        videoRelaunchCallback = null
+        Log.d(TAG, "AppWatcher: video guard removed")
+        // Если code-режим не запущен — останавливаемся полностью
+        if (allowedVpnPackage.isEmpty()) stop()
     }
 
     fun stop() {
@@ -261,12 +291,19 @@ object AppWatcher {
     }
 
     private fun returnToOverlay(context: Context) {
-        // Просто жмём Home — onStop в OverlayActivity/VideoActivity сам перезапустит окно
-        val homeIntent = Intent(Intent.ACTION_MAIN).apply {
-            addCategory(Intent.CATEGORY_HOME)
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK
+        val videoCallback = videoRelaunchCallback
+        if (videoCallback != null) {
+            // Режим видео: перезапускаем VideoActivity напрямую
+            Log.d(TAG, "returnToOverlay: invoking video relaunch callback")
+            handler.post { videoCallback() }
+        } else {
+            // Режим code: жмём Home — onStop в OverlayActivity сам перезапустит окно
+            val homeIntent = Intent(Intent.ACTION_MAIN).apply {
+                addCategory(Intent.CATEGORY_HOME)
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            }
+            context.startActivity(homeIntent)
         }
-        context.startActivity(homeIntent)
     }
 
     private fun getForegroundPackage(context: Context): String? {
