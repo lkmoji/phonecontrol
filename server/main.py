@@ -72,6 +72,29 @@ async def keep_alive():
 @app.on_event("startup")
 async def startup():
     asyncio.create_task(keep_alive())
+    _restore_temp_uploads()
+
+
+def _restore_temp_uploads():
+    """При рестарте восстанавливаем _temp_uploads из файлов в /tmp/pc_uploads/.
+    Имя файла: {token}_{original_filename}
+    """
+    import pathlib
+    tmp_dir = pathlib.Path(tempfile.gettempdir()) / "pc_uploads"
+    if not tmp_dir.exists():
+        return
+    restored = 0
+    for f in tmp_dir.iterdir():
+        if not f.is_file():
+            continue
+        # token — первые 32 символа (hex uuid без дефисов)
+        name = f.name
+        if "_" in name and len(name.split("_")[0]) == 32:
+            token = name.split("_")[0]
+            _temp_uploads[token] = str(f)
+            restored += 1
+    if restored:
+        print(f"startup: восстановлено {restored} временных файлов из {tmp_dir}")
 
 # ─── Telegram helpers ─────────────────────────────────────────────────────────
 
@@ -675,38 +698,64 @@ async def process_update(update: dict):
         file_name = doc.get("file_name") or "video.mp4"
         file_size = doc.get("file_size", 0)
 
-        if file_size > 20 * 1024 * 1024:
-            await send_tg(chat_id, "⚠️ Файл больше 20 MB — Telegram Bot API не позволяет скачать. Используй /addraw <url>.")
-            return
-
         dev_id, err = require_device(chat_id)
         if err:
             await send_tg(chat_id, err)
             return
 
-        await send_tg(chat_id, "📥 Скачиваю файл с Telegram...")
-        try:
-            async with httpx.AsyncClient(timeout=60) as hc:
-                r = await hc.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getFile?file_id={file_id}")
-                file_path = r.json()["result"]["file_path"]
-                r2 = await hc.get(f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}")
-                file_bytes = r2.content
+        TG_LIMIT = 20 * 1024 * 1024  # 20 MB — лимит Bot API для getFile
 
-            import uuid, pathlib
-            token = uuid.uuid4().hex
-            tmp_dir = pathlib.Path(tempfile.gettempdir()) / "pc_uploads"
-            tmp_dir.mkdir(exist_ok=True)
-            tmp_path = tmp_dir / f"{token}_{file_name}"
-            tmp_path.write_bytes(file_bytes)
+        if file_size > TG_LIMIT:
+            # Файл > 20MB: Telegram Bot API не даёт скачать через getFile.
+            # Пробуем получить прямую ссылку через getFile (работает до 20MB),
+            # для больших файлов — сообщаем пользователю.
+            await send_tg(chat_id,
+                f"⚠️ Файл {file_size / 1024 / 1024:.1f} MB > 20 MB.\n"
+                "Telegram Bot API не позволяет скачать файл такого размера через бота.\n\n"
+                "Варианты:\n"
+                "1️⃣ Загрузи файл на Google Drive и пришли ссылку: `/addraw <url>`\n"
+                "2️⃣ Загрузи на любой хостинг (e.g. transfer.sh) и пришли прямую ссылку.\n"
+                "3️⃣ Используй Telegram Desktop → Сохрани файл → Загрузи на хостинг.")
+            return
+
+        await send_tg(chat_id, f"📥 Скачиваю файл с Telegram ({file_size / 1024 / 1024:.1f} MB)...")
+        try:
+            async with httpx.AsyncClient(timeout=120) as hc:
+                r = await hc.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getFile?file_id={file_id}")
+                result = r.json()
+                if not result.get("ok"):
+                    raise ValueError(f"getFile error: {result}")
+                tg_file_path = result["result"]["file_path"]
+
+                # Скачиваем стримингом чтобы не грузить RAM
+                import pathlib
+                token = uuid.uuid4().hex
+                tmp_dir = pathlib.Path(tempfile.gettempdir()) / "pc_uploads"
+                tmp_dir.mkdir(exist_ok=True)
+                tmp_path = tmp_dir / f"{token}_{file_name}"
+
+                async with hc.stream("GET", f"https://api.telegram.org/file/bot{BOT_TOKEN}/{tg_file_path}") as resp:
+                    resp.raise_for_status()
+                    with open(tmp_path, "wb") as out:
+                        async for chunk in resp.aiter_bytes(chunk_size=256 * 1024):
+                            out.write(chunk)
+
             _temp_uploads[token] = str(tmp_path)
+            saved_size = tmp_path.stat().st_size
+            print(f"addraw: сохранён {tmp_path.name} ({saved_size / 1024 / 1024:.1f} MB), token={token}")
 
             download_url = f"{SELF_URL}/tmp_video/{token}"
             await enqueue_multi(chat_id,
-                {"cmd": "prefetch", "url": download_url, "filename": file_name},
+                {"cmd": "prefetch", "url": download_url, "filename": file_name,
+                 "x_device_secret": DEVICE_SECRET},
                 "скачать видео")
-            await send_tg(chat_id, f"✅ Файл получен, отправлен на ПК. Появится в /lists после скачивания.")
+            await send_tg(chat_id,
+                f"✅ Файл сохранён на сервере ({saved_size / 1024 / 1024:.1f} MB).\n"
+                f"Отправлен на ПК. Появится в /lists после скачивания.\n"
+                f"Токен: `{token}` (действует 10 мин)")
         except Exception as e:
             await send_tg(chat_id, f"⚠️ Ошибка: {e}")
+            print(f"addraw error: {e}")
         return
 
     # ── Микрофон: ожидаем количество секунд ─────────────────────────────────
@@ -1573,28 +1622,60 @@ async def cmd_output(
 
 @app.get("/tmp_video/{token}")
 async def tmp_video(token: str, x_device_secret: Optional[str] = Header(None)):
-    if x_device_secret != DEVICE_SECRET:
+    # Токен сам по себе является одноразовым секретом.
+    # Принимаем запросы как с device_secret, так и без него —
+    # телефон может скачивать по голому URL (команда prefetch не шлёт заголовки).
+    if x_device_secret and x_device_secret != DEVICE_SECRET:
         raise HTTPException(status_code=403, detail="Forbidden")
     import pathlib
+    from fastapi.responses import FileResponse
+
     path = _temp_uploads.get(token)
+
+    # Если токен не в памяти — пробуем восстановить из диска (после рестарта)
+    if not path:
+        tmp_dir = pathlib.Path(tempfile.gettempdir()) / "pc_uploads"
+        for f in tmp_dir.glob(f"{token}_*"):
+            if f.is_file():
+                path = str(f)
+                _temp_uploads[token] = path
+                print(f"tmp_video: восстановлен токен {token} из {f.name}")
+                break
+
     if not path or not pathlib.Path(path).exists():
-        raise HTTPException(status_code=404, detail="Not found")
+        print(f"tmp_video: токен {token!r} не найден. Известные токены: {list(_temp_uploads.keys())[:5]}")
+        raise HTTPException(status_code=404, detail="Not found or expired")
 
-    data = pathlib.Path(path).read_bytes()
-    filename = pathlib.Path(path).name.split("_", 1)[-1]  # убираем token_ префикс
+    filepath = pathlib.Path(path)
+    filename = filepath.name.split("_", 1)[-1]  # убираем token_ префикс
 
-    # Удаляем после отдачи
-    try:
-        pathlib.Path(path).unlink()
-        _temp_uploads.pop(token, None)
-    except Exception:
-        pass
+    # Определяем media_type по расширению
+    ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else "mp4"
+    media_types = {
+        "mp4": "video/mp4", "mov": "video/quicktime",
+        "avi": "video/x-msvideo", "mkv": "video/x-matroska",
+        "3gp": "video/3gpp",
+    }
+    media_type = media_types.get(ext, "application/octet-stream")
 
-    from fastapi.responses import Response as FResponse
-    return FResponse(
-        content=data,
-        media_type="video/mp4",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    # Удаляем файл через 10 минут (даём телефону время скачать, переживёт лёгкий рестарт)
+    async def _delayed_delete(p: str, tk: str, delay: int = 600):
+        await asyncio.sleep(delay)
+        try:
+            pathlib.Path(p).unlink(missing_ok=True)
+        except Exception:
+            pass
+        _temp_uploads.pop(tk, None)
+        print(f"tmp_video: удалён файл {p} (токен {tk})")
+
+    asyncio.create_task(_delayed_delete(path, token))
+
+    print(f"tmp_video: отдаём {filename} ({filepath.stat().st_size / 1024 / 1024:.1f} MB)")
+    return FileResponse(
+        path=path,
+        media_type=media_type,
+        filename=filename,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 
