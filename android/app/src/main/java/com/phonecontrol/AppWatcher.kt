@@ -90,10 +90,7 @@ object AppWatcher {
 
     // Параметры текущей сессии
     private var allowedVpnPackage = ""   // com.happproxy / su.happ.proxyutility / llc.itdev.incy
-    private var overlayMessage    = ""
-    private var overlayChatId     = ""
-    private var overlaySecret     = ""
-    private var overlayAllowMedia = false
+
 
     // Состояние браузерного таймера
     private var browserTimerStart = 0L
@@ -113,18 +110,10 @@ object AppWatcher {
     fun start(
         context: Context,
         vpnPackage: String,
-        message: String,
-        chatId: String,
-        secret: String,
-        allowMedia: Boolean,
     ) {
         if (running) stop()
         appContext        = context.applicationContext
         allowedVpnPackage = vpnPackage
-        overlayMessage    = message
-        overlayChatId     = chatId
-        overlaySecret     = secret
-        overlayAllowMedia = allowMedia
         running           = true
         browserTimerActive = false
         browserTimerStart  = 0L
@@ -272,24 +261,28 @@ object AppWatcher {
     }
 
     private fun returnToOverlay(context: Context) {
-        OverlayActivity.start(
-            context         = context,
-            message         = overlayMessage,
-            fbMode          = "code",
-            chatId          = overlayChatId,
-            codeSecret      = overlaySecret,
-            allowMedia      = overlayAllowMedia,
-            allowFeedback   = true,
-        )
+        // Просто жмём Home — onStop в OverlayActivity/VideoActivity сам перезапустит окно
+        val homeIntent = Intent(Intent.ACTION_MAIN).apply {
+            addCategory(Intent.CATEGORY_HOME)
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK
+        }
+        context.startActivity(homeIntent)
     }
 
     private fun getForegroundPackage(context: Context): String? {
         return try {
             val usm = context.getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
             val now = System.currentTimeMillis()
-            val stats = usm.queryUsageStats(UsageStatsManager.INTERVAL_DAILY, now - 10_000, now)
-            if (stats.isNullOrEmpty()) return null
-            stats.maxByOrNull { it.lastTimeUsed }?.packageName
+            val events = usm.queryEvents(now - 5000, now) ?: return null
+            var lastPkg = ""
+            val event = android.app.usage.UsageEvents.Event()
+            while (events.hasNextEvent()) {
+                events.getNextEvent(event)
+                if (event.eventType == android.app.usage.UsageEvents.Event.ACTIVITY_RESUMED) {
+                    lastPkg = event.packageName
+                }
+            }
+            if (lastPkg.isEmpty()) null else lastPkg
         } catch (e: Exception) {
             Log.e(TAG, "getForegroundPackage error: ${e.message}")
             null
