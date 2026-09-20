@@ -118,6 +118,7 @@ class VideoActivity : AppCompatActivity() {
 
         fun unlock() {
             lockActive = false
+            AppWatcher.stopVideoGuard()
         }
 
         fun getCacheFile(context: Context, url: String): File {
@@ -172,6 +173,11 @@ class VideoActivity : AppCompatActivity() {
         hideSystemUI()
 
         if (videoUrl != null) downloadVideo(videoUrl!!)
+
+        // AppWatcher — вторая линия обороны: следит за foreground и сам перезапускает нас
+        if (lockMode && !canClose) {
+            AppWatcher.startVideoGuard(applicationContext) { relaunchVideo() }
+        }
     }
 
     private fun relaunchVideo() {
@@ -189,21 +195,22 @@ class VideoActivity : AppCompatActivity() {
 
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
-        // onStop тоже сработает — перезапуск там
+        // Перезапуском занимается AppWatcher
     }
 
     override fun onStop() {
         super.onStop()
-        if (lockMode && !canClose) {
-            // Перезапускаем через 500мс — даём системе время убрать recents
-            handler.postDelayed({ relaunchVideo() }, 500L)
-        } else {
+        // Перезапуском занимается AppWatcher — он следит за foreground и вызывает relaunchVideo().
+        // Здесь только закрываем если разрешено.
+        if (canClose || !lockMode) {
             finishAndRemoveTask()
         }
+        // Иначе ничего не делаем — AppWatcher вернёт нас на экран
     }
 
     private fun closeVideo() {
         lockActive = false
+        AppWatcher.stopVideoGuard()
         finishAndRemoveTask()
     }
 
@@ -288,6 +295,7 @@ class VideoActivity : AppCompatActivity() {
                     canClose = true
                     lockActive = false
                     handler.post {
+                        AppWatcher.stopVideoGuard()
                         showCloseButton()
                         launchFeedbackIfNeeded()
                     }
@@ -355,6 +363,7 @@ class VideoActivity : AppCompatActivity() {
                 statusText.visibility = android.view.View.GONE
                 canClose = true
                 lockActive = false
+                AppWatcher.stopVideoGuard()
                 showCloseButton()
                 launchFeedbackIfNeeded()
             }
@@ -516,6 +525,8 @@ class VideoActivity : AppCompatActivity() {
         scope.cancel()
         try { mediaPlayer?.apply { if (isPlaying) stop(); release() } } catch (e: Exception) { }
         mediaPlayer = null
+        // Снимаем охрану AppWatcher — Activity уничтожается
+        AppWatcher.stopVideoGuard()
         // Освобождаем приоритет видео — code overlay может всплыть
         OverlayPriorityManager.clearActive(OverlayActivity.PRIORITY_VIDEO)
         super.onDestroy()
