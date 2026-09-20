@@ -779,12 +779,12 @@ async def process_update(update: dict):
     # ── Видео: ожидаем duration ───────────────────────────────────────────────
     vsess = state["video_sessions"].get(chat_id)
     if vsess and vsess["step"] == "duration":
-        if not text.isdigit():
-            await send_tg(chat_id, "⚠️ Введи число секунд (или 0)")
+        if not text.lstrip("-").isdigit():
+            await send_tg(chat_id, "⚠️ Введи число секунд (0 = без ограничения, -1 = до конца видео)")
             return
-        duration = int(text) if text.lstrip("-").isdigit() else 0
+        duration = int(text)
         if duration < -1:
-            await send_tg(chat_id, "⚠️ Введи число секунд (0 = без ограничения, -1 = до конца)")
+            await send_tg(chat_id, "⚠️ Введи число секунд (0 = без ограничения, -1 = до конца видео)")
             return
         vsess["duration"] = duration
         vsess["step"] = "minimize"
