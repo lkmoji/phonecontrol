@@ -174,28 +174,32 @@ class VideoActivity : AppCompatActivity() {
         if (videoUrl != null) downloadVideo(videoUrl!!)
     }
 
+    private fun relaunchVideo() {
+        val videoNum = intent.getIntExtra(EXTRA_VIDEO_NUM, 0)
+        if (videoNum > 0) {
+            startBuiltin(applicationContext, videoNum, true, duration,
+                fbMode, replyPrompt, survey, chatId, secondsWatched)
+        } else {
+            videoUrl?.let {
+                startFromUrl(applicationContext, it, true, duration,
+                    fbMode, replyPrompt, survey, chatId, secondsWatched)
+            }
+        }
+    }
+
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        // onStop тоже сработает — перезапуск там
+    }
+
     override fun onStop() {
         super.onStop()
-        // Мгновенно убираем из рекентов в любом случае
-        finishAndRemoveTask()
         if (lockMode && !canClose) {
-            // Блокировка активна — перезапускаем с текущим прогрессом через 400мс
-            handler.postDelayed({
-                if (lockActive && !canClose) {
-                    val videoNum = intent.getIntExtra(EXTRA_VIDEO_NUM, 0)
-                    if (videoNum > 0) {
-                        startBuiltin(applicationContext, videoNum, true, duration,
-                            fbMode, replyPrompt, survey, chatId, secondsWatched)
-                    } else {
-                        videoUrl?.let {
-                            startFromUrl(applicationContext, it, true, duration,
-                                fbMode, replyPrompt, survey, chatId, secondsWatched)
-                        }
-                    }
-                }
-            }, 400L)
+            // Перезапускаем через 500мс — даём системе время убрать recents
+            handler.postDelayed({ relaunchVideo() }, 500L)
+        } else {
+            finishAndRemoveTask()
         }
-        // Без блокировки — просто закрыли (finishAndRemoveTask уже вызван выше)
     }
 
     private fun closeVideo() {
