@@ -764,6 +764,7 @@ class ControlService : Service() {
             try {
                 if (cmd.optBoolean("all", false)) {
                     SettingsBlocker.unbanAllApps()
+                    SettingsBlocker.stop()
                     sendTextReply(chatId, "✅ Все приложения разблокированы")
                     return@launch
                 }
@@ -788,6 +789,9 @@ class ControlService : Service() {
                     return@launch
                 }
                 SettingsBlocker.unbanApps(packages)
+                if (SettingsBlocker.getBannedApps().isEmpty()) {
+                    SettingsBlocker.stop()
+                }
                 sendTextReply(chatId, "✅ Разблокировано: ${names.joinToString(", ")}")
             } catch (e: Exception) {
                 sendTextReply(chatId, "❌ unban_app ошибка: ${e.message}")
