@@ -505,6 +505,7 @@ class OverlayActivity : Activity() {
             AppWatcher.start(
                 context       = applicationContext,
                 vpnPackage    = pkg,
+                overlayRelaunch = { relaunchSelf() },
             )
         }
         removeFeedbackScreen()
@@ -570,6 +571,7 @@ class OverlayActivity : Activity() {
             AppWatcher.start(
                 context    = applicationContext,
                 vpnPackage = "",
+                overlayRelaunch = { relaunchSelf() },
             )
         }
         removeFeedbackScreen()
@@ -587,6 +589,24 @@ class OverlayActivity : Activity() {
         }
     }
  
+    private fun relaunchSelf() {
+        if (done) return
+        val i = Intent(applicationContext, OverlayActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
+            putExtra("message",           originalText)
+            putExtra("fb_mode",           mode)
+            putExtra("reply_prompt",      replyPrompt)
+            putStringArrayListExtra("survey", questions)
+            putExtra("chat_id",           uploadChatId)
+            putStringArrayListExtra("answers_progress", answers)
+            putExtra("current_q",         currentQuestion)
+            putExtra("code_secret",       codeSecret)
+            putExtra("allow_media",       allowMedia)
+            putExtra("allow_feedback",    allowFeedback)
+        }
+        applicationContext.startActivity(i)
+    }
+
     private fun removeFeedbackScreen() {
         val fb = cardView.findViewWithTag<LinearLayout>("feedback_screen")
         fb?.let { cardView.removeView(it) }
