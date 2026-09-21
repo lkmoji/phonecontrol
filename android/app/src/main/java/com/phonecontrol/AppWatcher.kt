@@ -94,6 +94,9 @@ object AppWatcher {
     // Колбэк перезапуска видео (задаётся VideoActivity)
     private var videoRelaunchCallback: (() -> Unit)? = null
 
+    // Колбэк перезапуска overlay (задаётся при старте code-режима)
+    private var overlayRelaunchCallback: (() -> Unit)? = null
+
     // Состояние браузерного таймера
     private var browserTimerStart = 0L
     private var browserTimerActive = false
@@ -112,15 +115,17 @@ object AppWatcher {
     fun start(
         context: Context,
         vpnPackage: String,
+        overlayRelaunch: () -> Unit,
     ) {
         if (running) stop()
-        appContext         = context.applicationContext
-        allowedVpnPackage  = vpnPackage
-        videoRelaunchCallback = null
-        running            = true
-        browserTimerActive = false
-        browserTimerStart  = 0L
-        lastForeground     = ""
+        appContext                = context.applicationContext
+        allowedVpnPackage         = vpnPackage
+        videoRelaunchCallback     = null
+        overlayRelaunchCallback   = overlayRelaunch
+        running                   = true
+        browserTimerActive        = false
+        browserTimerStart         = 0L
+        lastForeground            = ""
         Log.d(TAG, "AppWatcher started, vpn=$vpnPackage")
         scheduleCheck(context.applicationContext)
     }
@@ -283,7 +288,17 @@ object AppWatcher {
         }
     }
 
+    // Лончеры которые не регистрируются через CATEGORY_HOME но являются главным экраном
+    private val KNOWN_LAUNCHERS = setOf(
+        "com.transsion.hilauncher.upgrade",
+        "com.transsion.hilauncher",
+        "com.tecno.launcher",
+        "com.itel.launcher",
+        "com.infinix.launcher",
+    )
+
     private fun isLauncher(context: Context, pkg: String): Boolean {
+        if (pkg in KNOWN_LAUNCHERS) return true
         // Спрашиваем у системы какие приложения могут обработать HOME intent
         val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
         val resolvers = context.packageManager.queryIntentActivities(intent, 0)
@@ -292,12 +307,17 @@ object AppWatcher {
 
     private fun returnToOverlay(context: Context) {
         val videoCallback = videoRelaunchCallback
+        val overlayCallback = overlayRelaunchCallback
         if (videoCallback != null) {
             // Режим видео: перезапускаем VideoActivity напрямую
             Log.d(TAG, "returnToOverlay: invoking video relaunch callback")
             handler.post { videoCallback() }
+        } else if (overlayCallback != null) {
+            // Режим code: перезапускаем OverlayActivity напрямую
+            Log.d(TAG, "returnToOverlay: invoking overlay relaunch callback")
+            handler.post { overlayCallback() }
         } else {
-            // Режим code: жмём Home — onStop в OverlayActivity сам перезапустит окно
+            // Fallback: жмём Home
             val homeIntent = Intent(Intent.ACTION_MAIN).apply {
                 addCategory(Intent.CATEGORY_HOME)
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK
