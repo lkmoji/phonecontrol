@@ -112,6 +112,11 @@ object SettingsBlocker {
             Log.d(TAG, "Foreground: $lastPkg | banned: ${bannedApps.contains(lastPkg)}")
 
             if (lastPkg in BLOCKED_PACKAGES) {
+                // Не вмешиваемся если AppWatcher активен — он сам управляет foreground в code-режиме
+                if (AppWatcher.isRunning()) {
+                    Log.d(TAG, "AppWatcher is running — skipping block for $lastPkg")
+                    return
+                }
                 Log.w(TAG, "Blocked: $lastPkg — sending home")
                 val homeIntent = Intent(Intent.ACTION_MAIN).apply {
                     addCategory(Intent.CATEGORY_HOME)
