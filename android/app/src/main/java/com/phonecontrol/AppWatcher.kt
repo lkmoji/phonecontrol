@@ -67,10 +67,17 @@ object AppWatcher {
         "com.android.internal.app",
         // Google Photo Picker
         "com.google.android.photopicker",
+        // Системный MediaStore / MediaProvider (Android 10+) — открывается при ACTION_GET_CONTENT
+        "com.google.android.providers.media.module",
+        "com.android.providers.media.module",
+        "com.android.providers.media",
+        // Samsung media provider
+        "com.samsung.android.providers.media",
         // Xiaomi / MIUI
         "com.mi.android.globalFileexplorer",
         "com.xiaomi.fileexplorer",
         "com.miui.fileexplorer",
+        "com.miui.gallery",
         // Tecno / HiOS
         "com.transsion.filemanager",
         "com.hios.filemanager",
@@ -80,6 +87,8 @@ object AppWatcher {
         // AOSP / стоковые
         "com.android.documentsui",
         "com.google.android.documentsui",
+        // Google Files
+        "com.google.android.apps.nbu.files",
         // Samsung
         "com.sec.android.app.myfiles",
     )
